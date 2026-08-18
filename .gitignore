@@ -1,0 +1,58 @@
+# ---------- OS / 编辑器 ----------
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+*.iml
+.vs/
+*.user
+*.suo
+
+# ---------- ZCode 内部工具 ----------
+.zcode/
+
+# ---------- Go（Bridge） ----------
+# bridge 编译输出（dist 目录）
+dist/
+*.test
+*.out
+
+# ---------- Rust / Cargo ----------
+# cargo 构建产物（sdk/rust/target）
+target/
+
+# ---------- .NET ----------
+# bin / obj 构建产物（dotnet/Debug、nuget 还原等）
+bin/
+obj/
+
+# ---------- Java / Maven ----------
+# Maven 构建产物（sdk/java/target）
+*.class
+*.jar
+
+# ---------- TypeScript / Node ----------
+node_modules/
+dist-test/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- CMake / C++ ----------
+build/
+CMakeCache.txt
+CMakeFiles/
+Testing/

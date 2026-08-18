@@ -1,0 +1,37 @@
+[package]
+name = "agentquay"
+description = "AgentQuay Rust SDK — 让 AI Agent 通过 MCP 发现并调用桌面应用方法（设计文档 §4.8）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agentquay-macros = { path = "../agentquay-macros", version = "0.1.0" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures-util = { version = "0.3", features = ["sink"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["derive"] }
+thiserror = "2"
+log = "0.4"
+dirs = "6"
+keyring = { version = "3", optional = true }
+rfd = { version = "0.15", optional = true }
+
+[features]
+default = ["embedded-bridge"]
+# token 持久化优先系统钥匙串（macOS Keychain / Windows Credential Manager / libsecret），
+# 不可用时回退 ~/.agentquay/tokens.json。
+# 注意：keyring 的加密依赖在部分工具链（如 MinGW 无 dlltool）下无法编译，故默认关闭。
+keyring = ["dep:keyring"]
+# 按目标平台内嵌 Bridge 二进制（include_bytes!），auto-spawn 时免安装
+embedded-bridge = []
+# 确认弹窗使用 OS 原生对话框（rfd）；默认回退控制台输入
+native-confirm = ["dep:rfd"]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+env_logger = "0.10"
+reqwest = { version = "0.12", default-features = false }
+tempfile = "3"

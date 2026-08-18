@@ -1,0 +1,18 @@
+# 默认按内容自动推断文本/二进制；文本统一以 LF 存入仓库，避免跨平台 CRLF 噪音
+* text=auto
+
+# 内嵌 Bridge 二进制（多平台、无统一扩展名，强制视为二进制，不做换行符处理）
+bridge_bin/** binary
+
+# 常见二进制扩展名
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.rlib binary
+*.jar binary

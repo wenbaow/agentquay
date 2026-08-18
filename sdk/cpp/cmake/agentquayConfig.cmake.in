@@ -1,0 +1,12 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# 构建时若启用了 Widgets（AGENTQUAY_WITH_WIDGETS=1），导出的目标会链接 Qt6::Widgets，
+# 消费方必须能解析该 target，因此此处按构建配置条件声明依赖。
+find_dependency(Qt6 COMPONENTS Core Network WebSockets)
+@AGENTQUAY_CONFIG_WIDGETS_DEP@
+
+include("${CMAKE_CURRENT_LIST_DIR}/agentquayTargets.cmake")
+
+check_required_components(agentquay)

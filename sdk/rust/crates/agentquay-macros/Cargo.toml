@@ -1,0 +1,14 @@
+[package]
+name = "agentquay-macros"
+description = "AgentQuay 的 #[agent_tool] 过程宏（设计文档 §4.8）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

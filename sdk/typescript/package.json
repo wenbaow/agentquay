@@ -1,0 +1,44 @@
+{
+  "name": "@agentquay/sdk",
+  "version": "0.1.0",
+  "description": "AgentQuay TypeScript SDK — 让 AI Agent 通过标准 MCP 协议发现并调用你的桌面应用方法",
+  "license": "Apache-2.0",
+  "keywords": ["mcp", "agent", "desktop", "ai", "tool", "agentquay"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "bridge_bin", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test tests/decorator.test.ts tests/schema.test.ts",
+    "test:e2e": "tsx --test tests/e2e.test.ts",
+    "smoke": "npm run build && npm run smoke:legacy && npm run smoke:dist",
+    "smoke:legacy": "tsc tests/legacy_smoke.ts --outDir dist-test --module commonjs --target ES2022 --experimentalDecorators --esModuleInterop --moduleResolution node --skipLibCheck --strict --types node && node dist-test/legacy_smoke.js",
+    "smoke:dist": "tsc tests/dist_smoke.ts --outDir dist-test --module commonjs --target ES2022 --experimentalDecorators --esModuleInterop --moduleResolution node --skipLibCheck --strict --types node && node dist-test/dist_smoke.js",
+    "example": "tsx examples/music_app.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.0",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "peerDependencies": {
+    "keytar": "*",
+    "zod": "*",
+    "zod-to-json-schema": "*"
+  },
+  "peerDependenciesMeta": {
+    "keytar": { "optional": true },
+    "zod": { "optional": true },
+    "zod-to-json-schema": { "optional": true }
+  }
+}

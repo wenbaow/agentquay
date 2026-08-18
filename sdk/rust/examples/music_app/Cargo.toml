@@ -1,0 +1,16 @@
+[package]
+name = "music_app"
+description = "AgentQuay Rust SDK 示例：被 AI Agent 控制的音乐应用"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+agentquay = { path = "../../crates/agentquay" }
+# 用户类型的 derive：serde 与 schemars 的 derive 宏生成 ::serde:: / ::schemars:: 路径，
+# 需要作为直接依赖（与任何基于 serde/schemars 的库一致）
+serde = { version = "1", features = ["derive"] }
+schemars = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+env_logger = "0.10"
