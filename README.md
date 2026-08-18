@@ -1,6 +1,12 @@
 # AgentQuay
 
-![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+![License](https://img.shields.io/github/license/wenbaow/agentquay)
+![Release](https://img.shields.io/github/v/release/wenbaow/agentquay)
+![Stars](https://img.shields.io/github/stars/wenbaow/agentquay)
+![Forks](https://img.shields.io/github/forks/wenbaow/agentquay)
+![Issues](https://img.shields.io/github/issues/wenbaow/agentquay)
+![Last commit](https://img.shields.io/github/last-commit/wenbaow/agentquay)
+![Top language](https://img.shields.io/github/languages/top/wenbaow/agentquay)
 ![SDKs](https://img.shields.io/badge/SDK-Python%20%7C%20TypeScript%20%7C%20Java%20%7C%20.NET%20%7C%20C%2B%2B%20%7C%20Rust-brightgreen.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
 
