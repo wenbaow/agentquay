@@ -284,10 +284,16 @@ fn embedded_bytes() -> &'static [u8] {
     include_bytes!("../bridge_bin/agentquay-darwin-arm64")
 }
 
+#[cfg(all(feature = "embedded-bridge", target_os = "macos", target_arch = "x86_64"))]
+fn embedded_bytes() -> &'static [u8] {
+    include_bytes!("../bridge_bin/agentquay-darwin-amd64")
+}
+
 #[cfg(not(any(
     all(feature = "embedded-bridge", target_os = "windows", target_arch = "x86_64"),
     all(feature = "embedded-bridge", target_os = "linux", target_arch = "x86_64"),
     all(feature = "embedded-bridge", target_os = "macos", target_arch = "aarch64"),
+    all(feature = "embedded-bridge", target_os = "macos", target_arch = "x86_64"),
 )))]
 fn embedded_bytes() -> &'static [u8] {
     // 当前平台没有内嵌二进制：回退 PATH 查找
@@ -299,8 +305,10 @@ fn embedded_binary() -> Option<PathBuf> {
     if bytes.is_empty() {
         return None;
     }
-    let name = if cfg!(target_os = "windows") {
+    let name = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "agentquay-windows-amd64.exe"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "agentquay-darwin-amd64"
     } else if cfg!(target_os = "linux") {
         "agentquay-linux-amd64"
     } else {

@@ -211,28 +211,44 @@ public final class BridgeSpawner {
                         + "或手动运行 `agentquay start --daemon`");
     }
 
+    /** 当前平台的候选二进制名：主名 agentquay-<os>-<arch>[.exe]，随后兼容旧命名。 */
+    private static String[] binaryCandidates() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String osName = os.contains("win") ? "windows"
+                : os.contains("mac") ? "darwin" : "linux";
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        String archName = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "amd64";
+        String ext = osName.equals("windows") ? ".exe" : "";
+        return new String[] {
+                "agentquay-" + osName + "-" + archName + ext,
+                osName.equals("windows") ? "agentquay.exe" : "agentquay",
+        };
+    }
+
     private static Path findBinary() {
-        // 1. Maven 包资源 bridge_bin/agentquay[.exe]
-        String name = System.getProperty("os.name", "").toLowerCase().contains("win")
-                ? "agentquay.exe" : "agentquay";
-        try (InputStream in = BridgeSpawner.class.getResourceAsStream("/bridge_bin/" + name)) {
-            if (in != null) {
-                Path target = Paths.get(System.getProperty("java.io.tmpdir"),
-                        "agentquay", "bridge_bin", name);
-                Files.createDirectories(target.getParent());
-                Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
-                return target;
+        // 1. Maven 包资源 bridge_bin/agentquay-<os>-<arch>[.exe]
+        for (String name : binaryCandidates()) {
+            try (InputStream in = BridgeSpawner.class.getResourceAsStream("/bridge_bin/" + name)) {
+                if (in != null) {
+                    Path target = Paths.get(System.getProperty("java.io.tmpdir"),
+                            "agentquay", "bridge_bin", name);
+                    Files.createDirectories(target.getParent());
+                    Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                    return target;
+                }
+            } catch (IOException e) {
+                LOG.log(Level.WARNING, "解压内嵌 Bridge 失败: " + name, e);
             }
-        } catch (IOException e) {
-            LOG.log(Level.WARNING, "解压内嵌 Bridge 失败", e);
         }
         // 2. PATH 中的 agentquay
         String pathEnv = System.getenv("PATH");
         if (pathEnv != null) {
             for (String dir : pathEnv.split(File.pathSeparator)) {
-                File candidate = new File(dir, name);
-                if (candidate.canExecute()) {
-                    return candidate.toPath();
+                for (String name : binaryCandidates()) {
+                    File candidate = new File(dir, name);
+                    if (candidate.canExecute()) {
+                        return candidate.toPath();
+                    }
                 }
             }
         }

@@ -20,12 +20,21 @@ const BRIDGE_BIN_DIRS = [
   path.join(__dirname, "bridge_bin"),
 ];
 
-/** 各平台内嵌二进制名（bridge/dist 产物，按平台/架构选择第一个存在的）。 */
-const PLATFORM_BIN: Record<string, string[]> = {
-  win32: ["agentquay-windows-amd64.exe", "agentquay.exe"],
-  darwin: ["agentquay-darwin-arm64", "agentquay-darwin", "agentquay"],
-  linux: ["agentquay-linux-amd64", "agentquay-linux", "agentquay"],
-};
+/** 架构映射（node os.arch() → 产物架构后缀）。 */
+const ARCH_MAP: Record<string, string> = { x64: "amd64", arm64: "arm64", ia32: "386" };
+
+/**
+ * 当前平台/架构下的内嵌二进制候选名，按优先级排列：
+ * 主名 agentquay-<os>-<arch>[.exe]，随后兼容无架构后缀的旧命名。
+ */
+function platformBinNames(): string[] {
+  const osName = process.platform === "win32" ? "windows" : process.platform; // darwin / linux
+  const arch = ARCH_MAP[process.arch] ?? process.arch;
+  const names = [`agentquay-${osName}-${arch}${osName === "windows" ? ".exe" : ""}`];
+  if (osName === "windows") names.push("agentquay.exe");
+  else names.push(`agentquay-${osName}`, "agentquay");
+  return names;
+}
 
 /**
  * 本进程拉起的 Bridge 子进程。生命周期由 Bridge 自己管理（空闲自回收），
@@ -65,7 +74,7 @@ export function findBridgeBinary(): string | null {
   if (env && fs.existsSync(env)) {
     return env;
   }
-  const candidates = PLATFORM_BIN[process.platform] ?? [];
+  const candidates = platformBinNames();
   for (const name of candidates) {
     for (const dir of BRIDGE_BIN_DIRS) {
       const p = path.join(dir, name);

@@ -92,6 +92,6 @@ dotnet run --project sdk/dotnet/examples/MusicApp                # 示例应用
 ## 打包说明
 
 - NuGet 包名 `AgentQuay.Sdk`，Bridge 二进制存放于包内 `contentFiles/any/any/bridge_bin/`，
-  引用包时自动复制到宿主输出目录（`bridge_bin/agentquay[.exe]`）。
+  引用包时自动复制到宿主输出目录（`bridge_bin/agentquay-<os>-<arch>[.exe]`）。
 - SDK 同时支持从环境变量 `AGENTQUAY_BRIDGE_BIN` / `AGENTQUAY_BRIDGE_DIR`、仓库树
   `bridge_bin/`、`PATH` 定位 Bridge 二进制。

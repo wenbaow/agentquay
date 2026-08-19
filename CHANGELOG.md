@@ -2,6 +2,15 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [Unreleased]
+
+### Changed
+
+- 内嵌 Bridge 二进制统一为架构后缀命名 `agentquay-<os>-<arch>[.exe]`，全部以当前源码
+  重新构建（darwin-arm64 / darwin-amd64 / linux-amd64 / windows-amd64）；补齐 Python
+  缺失的 darwin/linux 产物、为此前各语言版本不一致的旧二进制统一到同一版本。各语言
+  SDK spawner 改为按运行时 os+arch 选择对应二进制（C++ 原有逻辑保持不变）。
+
 ## [0.1.0] - 2026-08-18
 
 应用启动注册表、OS 级发现与内嵌 Bridge 生命周期完整方案落地。

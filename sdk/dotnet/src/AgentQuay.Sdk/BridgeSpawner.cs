@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace AgentQuay;
@@ -242,8 +243,16 @@ public sealed class BridgeSpawner
 
     // ------------------------------------------------------------------
 
-    private static string BinaryName =>
-        OperatingSystem.IsWindows() ? "agentquay.exe" : "agentquay";
+    /// <summary>当前平台的候选二进制名：主名 agentquay-&lt;os&gt;-&lt;arch&gt;[.exe]，随后兼容旧命名。</summary>
+    private static IEnumerable<string> BinaryCandidates()
+    {
+        string osName = OperatingSystem.IsWindows() ? "windows"
+            : OperatingSystem.IsMacOS() ? "darwin" : "linux";
+        string archName = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "arm64" : "amd64";
+        string ext = osName == "windows" ? ".exe" : "";
+        yield return $"agentquay-{osName}-{archName}{ext}";
+        yield return osName == "windows" ? "agentquay.exe" : "agentquay";
+    }
 
     private static string? FindBinary()
     {
@@ -256,29 +265,38 @@ public sealed class BridgeSpawner
         env = Environment.GetEnvironmentVariable("AGENTQUAY_BRIDGE_DIR");
         if (!string.IsNullOrEmpty(env))
         {
-            string candidate = Path.Combine(env, BinaryName);
-            if (File.Exists(candidate))
+            foreach (string name in BinaryCandidates())
             {
-                return candidate;
+                string candidate = Path.Combine(env, name);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
             }
         }
 
         // 2. 输出目录 bridge_bin（NuGet contentFiles / CopyToOutputDirectory 分发）
         string baseDir = AppContext.BaseDirectory;
-        string? direct = JoinIfExists(baseDir, "bridge_bin", BinaryName);
-        if (direct != null)
+        foreach (string name in BinaryCandidates())
         {
-            return direct;
+            string? direct = JoinIfExists(baseDir, "bridge_bin", name);
+            if (direct != null)
+            {
+                return direct;
+            }
         }
 
         // 3. 仓库开发布局：向上回溯查找 bridge_bin（tests/bin/Debug/net8.0 → 仓库根）
         var cursor = new DirectoryInfo(baseDir);
         for (int i = 0; i < 8 && cursor != null; i++)
         {
-            string? found = JoinIfExists(cursor.FullName, "bridge_bin", BinaryName);
-            if (found != null)
+            foreach (string name in BinaryCandidates())
             {
-                return found;
+                string? found = JoinIfExists(cursor.FullName, "bridge_bin", name);
+                if (found != null)
+                {
+                    return found;
+                }
             }
             cursor = cursor.Parent;
         }
@@ -287,16 +305,15 @@ public sealed class BridgeSpawner
         string? pathEnv = Environment.GetEnvironmentVariable("PATH");
         if (!string.IsNullOrEmpty(pathEnv))
         {
-            foreach (string dir in pathEnv.Split(Path.PathSeparator))
+            foreach (string dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
-                if (string.IsNullOrEmpty(dir))
+                foreach (string name in BinaryCandidates())
                 {
-                    continue;
-                }
-                string candidate = Path.Combine(dir, BinaryName);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
+                    string candidate = Path.Combine(dir, name);
+                    if (File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
                 }
             }
         }

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import socket
 import subprocess
@@ -49,18 +50,28 @@ def probe(host: str, port: int, timeout: float = 0.3) -> bool:
 
 
 def _bundled_binary() -> Path | None:
-    """随包分发的 Bridge 二进制：agentquay/bridge_bin/agentquay[.exe]。"""
+    """随包分发的 Bridge 二进制：agentquay/bridge_bin/agentquay-<os>-<arch>[.exe]。"""
     system = "windows" if os.name == "nt" else sys.platform  # darwin / linux
-    names = {
+    arch = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(platform.machine().lower(), "amd64")
+    names = [f"agentquay-{system}-{arch}" + (".exe" if system == "windows" else "")]
+    # 兼容无架构后缀的旧命名（新包不再分发，仅为旧安装兼容）
+    names.append({
         "windows": "agentquay.exe",
         "darwin": "agentquay-darwin",
         "linux": "agentquay-linux",
-    }
-    name = names.get(system)
-    if not name:
-        return None
-    candidate = Path(__file__).resolve().parent / "bridge_bin" / name
-    return candidate if candidate.exists() else None
+    }.get(system, ""))
+    for name in names:
+        if not name:
+            continue
+        candidate = Path(__file__).resolve().parent / "bridge_bin" / name
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def find_bridge_binary() -> Path | None:
