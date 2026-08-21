@@ -25,8 +25,9 @@ logger = logging.getLogger("agentquay")
 PORT_FILE = Path.home() / ".agentquay" / "port"
 
 # spawn 原子锁：~/.agentquay/spawn.lock（步骤 3：多应用同时首启时保证只有一个去拉起 Bridge）
+# startedAt 统一为 epoch 毫秒（与 TS/Rust/Java/C++ 互认；C# 同用 epoch 毫秒）
 SPAWN_LOCK = Path.home() / ".agentquay" / "spawn.lock"
-SPAWN_LOCK_TTL_SECONDS = 15.0  # 崩溃残留锁的过期时间，超过可抢占
+SPAWN_LOCK_TTL_MS = 15_000.0  # 崩溃残留锁的过期时间，超过可抢占
 SPAWN_WAIT_SECONDS = 12.0
 
 
@@ -96,8 +97,11 @@ def spawn_embedded(binary: Path, log_dir: Path | None = None) -> subprocess.Pope
     env["AGENTQUAY_LOG_DIR"] = str(log_dir)
 
     log_file = open(log_dir / "agentquay.log", "ab")
-    # Windows 上脱离控制台；SDK 退出时由 atexit 终止
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    # Windows 上脱离控制台并隐藏新建的控制台窗口（桌面 GUI 应用拉起嵌入式桥时
+    # 不得弹出终端窗口），否则子进程是控制台子系统会闪现黑窗口
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         proc = subprocess.Popen(
             [str(binary), "serve", "--embedded"],
@@ -134,7 +138,7 @@ def _write_lock() -> bool:
     except FileExistsError:
         return False
     with os.fdopen(fd, "w") as f:
-        f.write(json.dumps({"pid": os.getpid(), "startedAt": time.time()}))
+        f.write(json.dumps({"pid": os.getpid(), "startedAt": time.time() * 1000}))
     return True
 
 
@@ -142,7 +146,7 @@ def _lock_expired() -> bool:
     """锁文件是否已超时（崩溃残留可被抢占）。"""
     try:
         data = json.loads(SPAWN_LOCK.read_text(encoding="utf-8"))
-        return time.time() - float(data.get("startedAt", 0)) > SPAWN_LOCK_TTL_SECONDS
+        return time.time() * 1000 - float(data.get("startedAt", 0)) > SPAWN_LOCK_TTL_MS
     except Exception:
         return True  # 缺失/损坏一律视为已失效
 

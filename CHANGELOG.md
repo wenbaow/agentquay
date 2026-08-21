@@ -4,12 +4,35 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-21
+
+### Fixed
+
+- **确认流程**：确认阶段应用断连/被替换时立即返回 `-32001`/`-32007`，不再等满确认超时
+  （此前 Agent 会白等 120s）——Bridge `mcpbridge.go`。
+- **跨语言 spawn 锁单位统一**：`spawn.lock` 的 `startedAt` 统一为 epoch 毫秒（Python 原写
+  epoch 秒、C# 原写系统启动起算的 `TickCount64`，与 TS/Java/C++/Rust 不互认，混合语言
+  并发首启会双拉起 Bridge）。
+- **启动弹终端窗口**：Python / Rust / C# 拉起内嵌 Bridge 时在 Windows 上设置
+  `CREATE_NO_WINDOW`（此前桌面 GUI 应用启动会闪现控制台窗口）。
+- **TypeScript**：`close()` 在重连退避期间调用不再导致 `connect()` 永久挂起（此前
+  `clearTimeout` 清掉退避定时器后 resolve 永不触发）。
+- **C++**：控制器改为共享所有权（QSharedPointer + 跨线程安全释放 + 工作线程 QPointer
+  守卫），修复 `stop()`/析构时在途 Tool（>3s）导致控制器 use-after-free；同时修复
+  `QVariant(QMetaType, void*)` 拷贝语义下枚举/回退分支的临时对象泄漏。
+- **Java**：工具调用钩子在工具存在性检查之后触发（与其它语言一致）；为新增的
+  `toolCallHandler` 补齐 XML 文档。
+- **C#**：修复 `toolCallHandler` 调用处参数类型不匹配导致的编译错误。
+
+### Added
+
+- 各语言 SDK 新增**工具调用钩子** `on_tool_call` / `onToolCall` / `toolCallHandler` /
+  `setToolCallHandler`：在业务方法执行前触发，供 UI 层拦截并响应（见 sdk-tutorial §6.7）。
+
 ### Changed
 
-- 内嵌 Bridge 二进制统一为架构后缀命名 `agentquay-<os>-<arch>[.exe]`，全部以当前源码
-  重新构建（darwin-arm64 / darwin-amd64 / linux-amd64 / windows-amd64）；补齐 Python
-  缺失的 darwin/linux 产物、为此前各语言版本不一致的旧二进制统一到同一版本。各语言
-  SDK spawner 改为按运行时 os+arch 选择对应二进制（C++ 原有逻辑保持不变）。
+- 全项目版本号升至 **0.1.1**；四平台 Bridge 二进制（darwin-amd64 / darwin-arm64 /
+  linux-amd64 / windows-amd64）全部以当前源码重建并同步到各 SDK 的 `bridge_bin/`。
 
 ## [0.1.0] - 2026-08-18
 

@@ -24,8 +24,10 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QMetaObject>
 #include <QObject>
+#include <QSharedPointer>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -59,7 +61,8 @@ struct ToolInfo {
     int confirmTimeoutSeconds = 120;
 
     // Qt 反射绑定
-    QObject* target = nullptr;               // 控制器实例（由客户端作为父对象管理）
+    QObject* target = nullptr;               // 控制器实例（非拥有指针；存活周期见 targetGuard）
+    QSharedPointer<QObject> targetGuard;     // owned 注册时的共享所有权：在途调用期间保持控制器存活
     const QMetaObject* metaObject = nullptr; // 注册时的类元对象
     int methodIndex = -1;                    // 方法在 metaObject 中的索引
 
@@ -92,24 +95,24 @@ public:
     void setConfirmHandler(ConfirmHandler handler);     // 默认 QMessageBox / 控制台
     void setLaunchInfo(LaunchInfo launchInfo);          // 启动命令（§5.8）；缺省自动探测
     void setAutoReportLaunch(bool enabled);             // 是否随注册上报启动命令（默认 true）
+    using ToolCallHandler = std::function<void(const QString&, const QVariantMap&)>;
+    void setToolCallHandler(ToolCallHandler handler);   // 工具调用钩子（默认无）
 
     // ------------------------------------------------------------------
     // 工具注册
     // ------------------------------------------------------------------
 
     /**
-     * 注册控制器类（Qt 反射路线）：构造 T(args...) 并作为本客户端的 QObject
-     * 子对象管理生命周期；扫描 QMetaObject 中与 AGENT_TOOL 匹配的
-     * Q_INVOKABLE 方法作为 Tool。T 必须派生自 QObject。
+     * 注册控制器类（Qt 反射路线）：构造 T(args...) 并共享所有权——在途 Tool 执行期间
+     * 保持控制器存活（引用归零后回到其所属线程释放）。扫描 QMetaObject 中与 AGENT_TOOL
+     * 匹配的 Q_INVOKABLE 方法作为 Tool。T 必须派生自 QObject。
      */
     template <typename T, typename... Args>
     void registerTools(Args&&... args)
     {
         static_assert(std::is_base_of<QObject, T>::value,
                       "AgentQuayClient::registerTools<T> 要求 T 派生自 QObject");
-        auto* instance = new T(std::forward<Args>(args)...);
-        instance->setParent(this);
-        registerReflected(instance);
+        registerOwned(new T(std::forward<Args>(args)...));
     }
 
     /** 注册控制器实例（Qt 反射路线；不接管所有权，客户端生命周期内实例须存活）。 */
@@ -191,7 +194,8 @@ private:
         }
     };
 
-    void registerReflected(QObject* instance);
+    void registerReflected(QObject* instance, const QSharedPointer<QObject>& guard = {});
+    void registerOwned(QObject* instance);
     void addToolInternal(ToolInfo info);
 
     // 连接流程
@@ -210,10 +214,10 @@ private:
     void handleDisconnect(const QString& reason);
     void onWatchdogTick();
 
-    // 调用执行
-    InvokeResult dispatchInvoke(const ToolInfo& tool, const QJsonObject& args);
+    // 调用执行（static：不读取客户端成员状态，故在途工作线程在客户端析构后仍可安全调用）
+    static InvokeResult dispatchInvoke(const ToolInfo& tool, const QJsonObject& args);
     static QVariant jsonToParam(const QJsonValue& value, int metaTypeId);
-    QVariant invokeReflected(const ToolInfo& tool, const QJsonObject& args) const;
+    static QVariant invokeReflected(const ToolInfo& tool, const QJsonObject& args);
     static QVariant invokeHandler(const ToolInfo& tool, const QJsonObject& args);
 
     // 发送
@@ -239,8 +243,11 @@ private:
     ConfirmHandler m_confirmHandler;
     LaunchInfo m_launchInfo;          // 随注册上报的启动命令（§5.8）
     bool m_autoReportLaunch = true;
+    ToolCallHandler m_toolCallHandler;  // 工具调用钩子
 
     std::vector<ToolInfo> m_tools;
+    // owned 注册的控制器共享所有权：客户端至少持有一份引用，在途工作线程各持一份
+    QList<QSharedPointer<QObject>> m_ownedControllers;
 
     QWebSocket* m_socket = nullptr;
     QTimer* m_pingTimer = nullptr;

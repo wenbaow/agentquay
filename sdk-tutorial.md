@@ -29,7 +29,8 @@
   - [6.3 超时与孤儿结果](#63-超时与孤儿结果)
   - [6.4 启动命令上报与离线自动拉起](#64-启动命令上报与离线自动拉起)
   - [6.5 错误处理（错误码）](#65-错误处理错误码)
-  - [6.6 内置工具 app_*](#66-内置工具-app_)
+  - [6.7 工具调用钩子（on_tool_call）](#67-工具调用钩子on_tool_call)
+- [6.8 内置工具 app_*](#68-内置工具-app_)
 - [7. 把 AI Agent 接进来（MCP）](#7-把-ai-agent-接进来mcp)
 - [8. Bridge 管理与运维](#8-bridge-管理与运维)
 - [9. 测试与验证](#9-测试与验证)
@@ -82,12 +83,12 @@
 
 | 语言 | 包名 | 版本 | 环境要求 | 实现位置 |
 |------|------|------|----------|----------|
-| Python | `agentquay-sdk`（PyPI） | 0.1.0 | Python ≥ 3.10 | `sdk/python` |
-| TypeScript | `@agentquay/sdk`（npm） | 0.1.0 | Node ≥ 18 | `sdk/typescript` |
-| Java | `com.agentquay:agentquay-sdk`（Maven） | 0.1.0 | Java 11+，编译器需 `-parameters` | `sdk/java` |
-| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.1.0 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
-| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.1.0 | Qt 6.5+，C++17 | `sdk/cpp` |
-| Rust | `agentquay`（crates.io 待发布，当前源码） | 0.1.0 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
+| Python | `agentquay-sdk`（PyPI） | 0.1.1 | Python ≥ 3.10 | `sdk/python` |
+| TypeScript | `@agentquay/sdk`（npm） | 0.1.1 | Node ≥ 18 | `sdk/typescript` |
+| Java | `com.agentquay:agentquay-sdk`（Maven） | 0.1.1 | Java 11+，编译器需 `-parameters` | `sdk/java` |
+| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.1.1 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
+| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.1.1 | Qt 6.5+，C++17 | `sdk/cpp` |
+| Rust | `agentquay`（crates.io 待发布，当前源码） | 0.1.1 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
 | Swift | 设计稿 §4.5（Swift Macro） | — | 尚未实现 | — |
 
 > 各 SDK 一致性：`name` 缺省回退到方法名；`description` 缺省回退到
@@ -289,7 +290,7 @@ await client.close();
 <dependency>
   <groupId>com.agentquay</groupId>
   <artifactId>agentquay-sdk</artifactId>
-  <version>0.1.0</version>
+  <version>0.1.1</version>
 </dependency>
 ```
 
@@ -661,9 +662,55 @@ C# `Environment.ProcessPath`、C++ `applicationFilePath()`、Rust `current_exe()
 Rust 侧还提供 `ToolError::business(code, message, details)` 用于从业务代码透传
 自定义错误码给 Agent。
 
-### 6.6 内置工具 app_*
+### 6.7 工具调用钩子（on_tool_call）
 
-| 工具 | 作用 |
+SDK 提供工具调用钩子，允许在业务方法执行前拦截调用，方便 UI 层响应。
+
+```python
+def on_tool_called(tool_name: str, arguments: dict):
+    if tool_name == "navigate_page":
+        category = arguments.get("category", "")
+        direction = arguments.get("direction", "next")
+        # 切到主线程更新 UI
+        loop.call_soon(ui.navigate, category, direction)
+
+client = AgentQuayClient("admin-system", "后台管理系统")
+client.on_tool_call = on_tool_called  # 注册钩子
+```
+
+各语言 SDK 均支持此钩子：
+
+| 语言 | 钩子名称 | 签名 |
+|------|---------|------|
+| Python | `on_tool_call` | `(tool_name: str, arguments: dict) -> None` |
+| TypeScript | `onToolCall` | `(toolName: string, arguments: Record<string, unknown>) => void` |
+| Java | `toolCallHandler` | `ToolCallHandler.onToolCall(String, Map<String, Object>)` |
+| C# | `toolCallHandler` | `ToolCallHandler(string, IReadOnlyDictionary<string, object?>?)` |
+| C++ | `setToolCallHandler` | `std::function<void(const QString&, const QVariantMap&)>` |
+| Rust | `tool_call_handler` | `dyn ToolCallHandler(on_tool_call(&str, Option<&Value>))` |
+
+典型用例：翻页导航。Agent 说"下一页"时，通过参数表达上下文：
+
+```python
+class AdminController:
+    @agent_tool("navigate_page", description="在指定类目翻页")
+    def navigate_page(self, category: str, direction: str = "next") -> dict:
+        # 业务逻辑：更新状态、加载数据
+        pass
+```
+
+```python
+# UI 层监听并响应
+def on_tool_called(name: str, args: dict):
+    if name == "navigate_page":
+        loop.call_soon(ui.navigate, args["category"], args.get("direction", "next"))
+
+client.on_tool_call = on_tool_called
+```
+
+> 钩子执行异常不影响业务方法：SDK 会捕获并记录警告，继续执行原流程。
+
+### 6.8 内置工具 app_*
 |------|------|
 | `app_list` | 查询应用注册表（在线/离线/可启动） |
 | `app_launch` | 按名启动应用 |

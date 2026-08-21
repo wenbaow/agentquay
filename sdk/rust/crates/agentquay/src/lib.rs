@@ -49,6 +49,7 @@ pub mod token;
 pub mod tool;
 
 mod schema;
+mod tool_call;
 
 #[doc(hidden)]
 pub mod __private {
@@ -66,6 +67,7 @@ pub use confirm::NativeConfirmationHandler;
 pub use error::AgentQuayError;
 pub use protocol::LaunchInfo;
 pub use tool::{FnToolProvider, IntoProviders, ToolError, ToolMetadata, ToolProvider};
+pub use tool_call::{LoggingToolCallHandler, ToolCallHandler};
 
 // 供过程宏生成代码与用户 derive 使用（agentquay::serde / agentquay::schemars 等）
 pub use schemars;

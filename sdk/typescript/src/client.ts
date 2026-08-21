@@ -119,6 +119,8 @@ export interface AgentQuayClientOptions {
   autoReportLaunch?: boolean;
   /** 自定义确认回调 async (message, arguments) => boolean，缺省使用终端确认。 */
   onConfirm?: ConfirmationHandler;
+  /** 工具调用钩子：在业务方法执行前触发（允许 UI 层拦截并响应）。签名：(toolName, args) => void。 */
+  onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
   /** Bridge 广播通知回调。 */
   onNotification?: (message: string) => void;
   /** 自定义日志器（默认只输出 warn/error 到 console）。 */
@@ -172,6 +174,8 @@ export class AgentQuayClient {
   private readonly launchInfo: LaunchInfo | null;
   /** 自定义确认回调（可在运行期切换，与 Python SDK 一致）。 */
   onConfirm?: ConfirmationHandler;
+  /** 工具调用钩子（可在运行期切换）。 */
+  onToolCall?: (toolName: string, args: Record<string, unknown>) => void;
   readonly onNotification?: (message: string) => void;
   private readonly log: Logger;
 
@@ -184,6 +188,8 @@ export class AgentQuayClient {
   private stopRequested = false;
   private closed = false;
   private sleepTimer: NodeJS.Timeout | null = null;
+  /** 退避等待的可唤醒句柄：close() 时提前 resolve，避免 connect() 永久挂起。 */
+  private sleepResolve: (() => void) | null = null;
   private schemasResolved = false;
 
   constructor(options: AgentQuayClientOptions) {
@@ -203,6 +209,7 @@ export class AgentQuayClient {
     this.heartbeatInterval = options.heartbeatInterval ?? 30;
     this.maxRetryInterval = options.maxRetryInterval ?? 30;
     this.onConfirm = options.onConfirm;
+    this.onToolCall = options.onToolCall;
     this.onNotification = options.onNotification;
     this.log = options.logger ?? defaultLogger;
     this.launchInfo = options.launch
@@ -328,9 +335,12 @@ export class AgentQuayClient {
   async close(): Promise<void> {
     this.closed = true;
     this.stopRequested = true;
-    if (this.sleepTimer) {
-      clearTimeout(this.sleepTimer);
-      this.sleepTimer = null;
+    // 唤醒正在退避等待的 runForever：否则 close() 期间 sleep() 的定时器被下面的
+    // clearTimeout 清掉、resolve 永不触发，connect() 会永久挂起
+    const wake = this.sleepResolve;
+    this.sleepResolve = null;
+    if (wake) {
+      wake();
     }
     const ws = this.ws;
     if (ws) {
@@ -647,6 +657,8 @@ export class AgentQuayClient {
       return;
     }
     this.log.debug(`执行 tool: ${toolName} args=${JSON.stringify(arguments_)}`);
+    // 触发工具调用钩子（在业务方法执行前）
+    this.onToolCall?.(toolName, arguments_);
     try {
       const result = await this.call(binding, arguments_, timeoutSeconds);
       await this.sendResult(ws, requestId, true, result, null);
@@ -752,7 +764,24 @@ export class AgentQuayClient {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      this.sleepTimer = setTimeout(resolve, ms);
+      if (this.stopRequested) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.sleepTimer = null;
+        this.sleepResolve = null;
+        resolve();
+      }, ms);
+      this.sleepTimer = timer;
+      this.sleepResolve = () => {
+        if (this.sleepTimer) {
+          clearTimeout(this.sleepTimer);
+          this.sleepTimer = null;
+        }
+        this.sleepResolve = null;
+        resolve();
+      };
     });
   }
 }

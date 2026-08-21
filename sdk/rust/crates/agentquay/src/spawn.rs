@@ -65,12 +65,14 @@ pub fn spawn_embedded(binary: &Path) -> std::io::Result<Child> {
         .env("AGENTQUAY_LOG_DIR", &log_dir)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
-    // Windows 上脱离控制台（SDK 退出时由 Drop 终止）
+    // Windows 上脱离控制台并隐藏新建的控制台窗口（桌面 GUI 应用拉起嵌入式桥时
+    // 不得闪现终端窗口）；CREATE_NEW_PROCESS_GROUP 与 CREATE_NO_WINDOW 可叠加
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     cmd.spawn()
 }

@@ -49,6 +49,8 @@ public sealed class AgentQuayClient : IAsyncDisposable
     private readonly int _heartbeatIntervalSeconds;
     private readonly int _maxRetryIntervalSeconds;
     private readonly ConfirmationHandler _confirmationHandler;
+    /// <summary>工具调用钩子：在业务方法执行前触发（允许 UI 层拦截并响应）。</summary>
+    private readonly ToolCallHandler? _toolCallHandler;
     /// <summary>上报给 Bridge 的启动命令（§5.8，离线自动拉起用）。</summary>
     private readonly LaunchInfo? _launchInfo;
 
@@ -67,7 +69,8 @@ public sealed class AgentQuayClient : IAsyncDisposable
     private AgentQuayClient(string appId, string appName, string host, int port, bool autoSpawnBridge,
                             string version, string protocolVersion,
                             int heartbeatIntervalSeconds, int maxRetryIntervalSeconds,
-                            ConfirmationHandler? confirmationHandler, LaunchInfo? launchInfo)
+                            ConfirmationHandler? confirmationHandler, LaunchInfo? launchInfo,
+                            ToolCallHandler? toolCallHandler = null)
     {
         _appId = appId;
         _appName = appName;
@@ -79,6 +82,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
         _heartbeatIntervalSeconds = heartbeatIntervalSeconds;
         _maxRetryIntervalSeconds = maxRetryIntervalSeconds;
         _confirmationHandler = confirmationHandler ?? ConfirmDialog.Ask;
+        _toolCallHandler = toolCallHandler;
         _launchInfo = launchInfo;
         _tokenStore = new TokenStore(appId);
         _token = _tokenStore.Get();
@@ -101,6 +105,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
     /// <param name="launchInfo">启动命令（§5.8）：显式指定随 register 上报供 Bridge 离线自动拉起；
     ///     缺省自动探测（<see cref="LaunchInfo.Detect"/>），null + autoReportLaunch=false 则不上报。</param>
     /// <param name="autoReportLaunch">是否在注册时自动上报启动命令（默认 true）。</param>
+    /// <param name="toolCallHandler">工具调用钩子：在业务方法执行前触发（允许 UI 层拦截并响应）。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     public static async Task<AgentQuayClient> ConnectAsync(
         string appId,
@@ -115,6 +120,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
         ConfirmationHandler? confirmationHandler = null,
         LaunchInfo? launchInfo = null,
         bool autoReportLaunch = true,
+        ToolCallHandler? toolCallHandler = null,
         CancellationToken cancellationToken = default)
     {
         if (!ToolMetadata.IsValidAppId(appId))
@@ -130,7 +136,8 @@ public sealed class AgentQuayClient : IAsyncDisposable
             appId, appName, host, port, autoSpawnBridge,
             version ?? DefaultVersion, protocolVersion ?? DefaultProtocolVersion,
             heartbeatIntervalSeconds, maxRetryIntervalSeconds, confirmationHandler,
-            launchInfo ?? (autoReportLaunch ? LaunchInfo.Detect() : null));
+            launchInfo ?? (autoReportLaunch ? LaunchInfo.Detect() : null),
+            toolCallHandler);
 
         // 首次连接：确保 Bridge 可用（含 auto-spawn），解析实际端口
         int resolved = await Task.Run(() => client._spawner.EnsureBridge(port, autoSpawnBridge), cancellationToken)
@@ -515,6 +522,12 @@ public sealed class AgentQuayClient : IAsyncDisposable
                 .ConfigureAwait(false);
             return;
         }
+
+        // 触发工具调用钩子（在业务方法执行前）
+        var argDict = args != null && args.GetValueKind() == JsonValueKind.Object
+            ? JsonToObject(args) as IReadOnlyDictionary<string, object?>
+            : null;
+        _toolCallHandler?.Invoke(toolName, argDict);
 
         try
         {

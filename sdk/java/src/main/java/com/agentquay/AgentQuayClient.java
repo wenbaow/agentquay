@@ -63,6 +63,8 @@ public class AgentQuayClient implements AutoCloseable {
     private final int heartbeatInterval;
     private final int maxRetryInterval;
     private final ConfirmationHandler confirmHandler;
+    /** 工具调用钩子：在业务方法执行前触发（允许 UI 层拦截并响应）。 */
+    private final ToolCallHandler toolCallHandler;
     /** 上报给 Bridge 的启动命令（§5.8，离线自动拉起用）。 */
     private final LaunchInfo launchInfo;
 
@@ -90,6 +92,7 @@ public class AgentQuayClient implements AutoCloseable {
         this.heartbeatInterval = b.heartbeatInterval;
         this.maxRetryInterval = b.maxRetryInterval;
         this.confirmHandler = b.confirmHandler != null ? b.confirmHandler : ConfirmDialog::ask;
+        this.toolCallHandler = b.toolCallHandler;
         this.launchInfo = b.launchInfo != null ? b.launchInfo : (b.autoReportLaunch ? LaunchInfo.detect() : null);
         this.tokenStore = new TokenStore(appId);
         this.token = tokenStore.get();
@@ -407,6 +410,20 @@ public class AgentQuayClient implements AutoCloseable {
                     Map.of("code", "TOOL_NOT_FOUND", "message", "tool 不存在: " + toolName));
             return;
         }
+
+        // 触发工具调用钩子（在业务方法执行前；工具存在性检查之后，与其它语言一致）
+        if (toolCallHandler != null) {
+            try {
+                Map<String, Object> argMap = args.isObject()
+                        ? Protocol.MAPPER.convertValue(args,
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {})
+                        : null;
+                toolCallHandler.onToolCall(toolName, argMap);
+            } catch (Exception e) {
+                LOG.log(Level.WARNING, "toolCallHandler 异常: " + e);
+            }
+        }
+
         LOG.fine("执行 tool: " + toolName + " args=" + args);
 
         try {
@@ -590,6 +607,7 @@ public class AgentQuayClient implements AutoCloseable {
         private int heartbeatInterval = 30;
         private int maxRetryInterval = 30;
         private ConfirmationHandler confirmHandler;
+        private ToolCallHandler toolCallHandler;
         private LaunchInfo launchInfo;
         private boolean autoReportLaunch = true;
 
@@ -650,6 +668,12 @@ public class AgentQuayClient implements AutoCloseable {
         /** 自定义确认回调（默认 Swing 对话框；无图形环境回退控制台）。 */
         public Builder confirmHandler(ConfirmationHandler confirmHandler) {
             this.confirmHandler = confirmHandler;
+            return this;
+        }
+
+        /** 工具调用钩子：在业务方法执行前触发，允许 UI 层拦截并响应。 */
+        public Builder toolCallHandler(ToolCallHandler toolCallHandler) {
+            this.toolCallHandler = toolCallHandler;
             return this;
         }
 

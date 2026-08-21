@@ -141,6 +141,7 @@ class AgentQuayClient:
         launch_info: LaunchInfo | None = None,
         auto_report_launch: bool = True,
         on_confirm: Callable[..., Any] | None = None,
+        on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> None:
         if not APP_ID_PATTERN.match(app_id):
             raise ValueError(
@@ -156,6 +157,7 @@ class AgentQuayClient:
         self.heartbeat_interval = heartbeat_interval
         self.max_retry_interval = max_retry_interval
         self.on_confirm = on_confirm
+        self.on_tool_call = on_tool_call
         self._launch_info = launch_info or (default_launch_info() if auto_report_launch else None)
 
         self._tools: dict[str, ToolBinding] = {}
@@ -415,6 +417,12 @@ class AgentQuayClient:
             return
 
         logger.debug("执行 tool: %s args=%s", tool_name, arguments)
+        # 触发工具调用钩子（在业务方法执行前）
+        if self.on_tool_call is not None:
+            try:
+                self.on_tool_call(tool_name, arguments)
+            except Exception as exc:
+                logger.warning("on_tool_call 钩子异常: %s", exc)
         try:
             result = await self._call(binding, arguments, timeout_seconds)
             await self._send_result(ws, request_id, True, result, None)

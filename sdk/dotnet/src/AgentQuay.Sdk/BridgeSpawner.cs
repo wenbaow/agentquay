@@ -68,8 +68,10 @@ public sealed class BridgeSpawner
     // ------------------------------------------------------------------
     // spawn 原子锁（步骤 3）：多应用同时首启时保证只有一个去拉起 Bridge。
     // 锁文件内容为 {pid, startedAt}，与其他语言 SDK 的锁互认。
+    // startedAt 统一为 epoch 毫秒（勿用 TickCount64：它是系统启动起算，跨进程不互认）。
 
     private static readonly string LockPath = Path.Combine(HomeDir, ".agentquay", "spawn.lock");
+    private static readonly Func<long> NowMs = () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     private const long LockTtlMs = 15_000;
     private const long SpawnWaitMs = 12_000;
 
@@ -81,7 +83,7 @@ public sealed class BridgeSpawner
             Directory.CreateDirectory(Path.GetDirectoryName(LockPath)!);
             using var fs = new FileStream(LockPath, FileMode.CreateNew, FileAccess.Write);
             using var w = new StreamWriter(fs);
-            w.Write($"{{\"pid\":{Environment.ProcessId},\"startedAt\":{Environment.TickCount64}}}");
+            w.Write($"{{\"pid\":{Environment.ProcessId},\"startedAt\":{NowMs()}}}");
             return true;
         }
         catch (IOException)
@@ -104,7 +106,7 @@ public sealed class BridgeSpawner
             {
                 startedAt = v;
             }
-            return Environment.TickCount64 - startedAt > LockTtlMs;
+            return NowMs() - startedAt > LockTtlMs;
         }
         catch
         {
@@ -343,6 +345,7 @@ public sealed class BridgeSpawner
         {
             FileName = binary,
             UseShellExecute = false,
+            CreateNoWindow = true, // 桌面 GUI 应用拉起嵌入式桥时隐藏控制台窗口
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };

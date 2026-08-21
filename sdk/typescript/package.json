@@ -1,6 +1,6 @@
 {
   "name": "@agentquay/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AgentQuay TypeScript SDK — 让 AI Agent 通过标准 MCP 协议发现并调用你的桌面应用方法",
   "license": "Apache-2.0",
   "keywords": ["mcp", "agent", "desktop", "ai", "tool", "agentquay"],

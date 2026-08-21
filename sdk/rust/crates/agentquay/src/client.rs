@@ -23,6 +23,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 use crate::confirm::{default_handler, ConfirmationHandler};
 use crate::error::AgentQuayError;
+use crate::tool_call::ToolCallHandler;
 use crate::protocol::{
     now_timestamp, ConfirmPayload, ConfirmResultPayload, Envelope, ErrorInfo, InvokePayload,
     LaunchInfo, ResultPayload, DISCONNECT_MIGRATE, DISCONNECT_NORMAL, DISCONNECT_REPLACED, MSG_CONFIRM,
@@ -64,6 +65,8 @@ pub struct AgentQuayClient {
     confirm_handler: Arc<dyn ConfirmationHandler>,
     /// 上报给 Bridge 的启动命令（§5.8，离线自动拉起用）。
     launch_info: Option<LaunchInfo>,
+    /// 工具调用钩子：在业务方法执行前触发。
+    tool_call_handler: Option<Arc<dyn ToolCallHandler>>,
 
     /// 已登记工具（注册顺序保持，供 tools/list 展示）。
     registry: Mutex<Vec<ToolEntry>>,
@@ -542,6 +545,14 @@ impl AgentQuayClient {
             });
             return;
         };
+
+        // 触发工具调用钩子（在业务方法执行前）
+        if let Some(handler) = &self.tool_call_handler {
+            let tool_name = payload.tool.clone();
+            let arguments = payload.arguments.clone();
+            handler.on_tool_call(&tool_name, Some(&arguments));
+        }
+
         let provider = provider.clone();
         let timeout_seconds = payload.timeout_seconds.unwrap_or(meta.timeout_seconds);
         debug!("执行 tool: {} args={}", payload.tool, payload.arguments);
@@ -776,6 +787,7 @@ pub struct ClientBuilder {
     confirm_handler: Option<Arc<dyn ConfirmationHandler>>,
     launch_info: Option<LaunchInfo>,
     auto_report_launch: bool,
+    tool_call_handler: Option<Arc<dyn ToolCallHandler>>,
 }
 
 impl Default for ClientBuilder {
@@ -799,6 +811,7 @@ impl ClientBuilder {
             confirm_handler: None,
             launch_info: None,
             auto_report_launch: true,
+            tool_call_handler: None,
         }
     }
 
@@ -862,6 +875,12 @@ impl ClientBuilder {
         self
     }
 
+    /// 工具调用钩子：在业务方法执行前触发，允许 UI 层拦截并响应。
+    pub fn tool_call_handler(mut self, handler: Arc<dyn ToolCallHandler>) -> Self {
+        self.tool_call_handler = Some(handler);
+        self
+    }
+
     /// 启动命令（§5.8）：显式指定，随 register 上报供 Bridge 离线自动拉起。
     /// 缺省自动探测当前可执行文件。
     pub fn launch_info(mut self, info: LaunchInfo) -> Self {
@@ -902,6 +921,7 @@ impl ClientBuilder {
             max_retry_interval: Duration::from_secs(self.max_retry_interval.max(1)),
             confirm_handler: self.confirm_handler.unwrap_or_else(default_handler),
             launch_info,
+            tool_call_handler: self.tool_call_handler,
             registry: Mutex::new(Vec::new()),
             token: Mutex::new(token_store.get()),
             token_store,

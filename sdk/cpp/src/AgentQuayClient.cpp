@@ -17,6 +17,8 @@
 #include <QMetaEnum>
 #include <QMetaMethod>
 #include <QMetaType>
+#include <QPointer>
+#include <QThread>
 #include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
@@ -27,6 +29,21 @@
 namespace agentquay {
 
 namespace {
+
+// owned 控制器的跨线程释放：QObject 在非所属线程析构不安全。
+// 引用归零发生在工作线程时，投送回对象所属线程 deleteLater；
+// 同线程（如主线程析构、无在途调用）直接删除。
+// 所属线程事件循环已停止（进程退出）时退化为泄漏，可接受。
+void releaseOnHomeThread(QObject* obj)
+{
+    if (!obj)
+        return;
+    if (QThread::currentThread() == obj->thread()) {
+        delete obj;
+        return;
+    }
+    QMetaObject::invokeMethod(obj, [obj] { obj->deleteLater(); }, Qt::QueuedConnection);
+}
 
 constexpr int kMaxInvokeArgs = 10;      // QMetaMethod::invoke 最多支持的动态参数个数
 constexpr int kRegisterTimeoutMs = 10000;
@@ -96,10 +113,11 @@ QVariant jsonToParamImpl(const QJsonValue& value, int metaTypeId)
                     continue;
                 const int n = me.keysToValue(value.toString().toUtf8());
                 if (n >= 0) {
-                    // Qt 6.8: QVariant(int, void*) 被移除，改用 QMetaType::create + move
+                    // Qt 6.8: QVariant(int, void*) 被移除，改用 QMetaType::create + copy
                     void* tmp = QMetaType::create(metaTypeId, &n);
                     if (tmp) {
                         QVariant v(QMetaType(metaTypeId), tmp);
+                        QMetaType(metaTypeId).destroy(tmp); // QVariant 为拷贝构造，释放临时对象
                         return v;
                     }
                 }
@@ -193,6 +211,11 @@ void AgentQuayClient::setConfirmHandler(ConfirmHandler handler)
 {
     m_confirmHandler = handler ? std::move(handler) : defaultConfirmHandler();
 }
+
+void AgentQuayClient::setToolCallHandler(ToolCallHandler handler)
+{
+    m_toolCallHandler = std::move(handler);
+}
 void AgentQuayClient::setLaunchInfo(LaunchInfo launchInfo)
 {
     m_launchInfo = std::move(launchInfo);
@@ -213,7 +236,18 @@ void AgentQuayClient::registerTools(QObject* instance)
     registerReflected(instance);
 }
 
-void AgentQuayClient::registerReflected(QObject* instance)
+void AgentQuayClient::registerOwned(QObject* instance)
+{
+    if (!instance)
+        throw AgentQuayException(QStringLiteral("registerTools 收到空实例"));
+    // 共享所有权：每个 ToolInfo 的 targetGuard 与 m_ownedControllers 各持一份引用，
+    // 在途工作线程的 guard 副本保证控制器在工具执行期间存活（修复 stop/析构的 UAF）。
+    const QSharedPointer<QObject> guard(instance, &releaseOnHomeThread);
+    m_ownedControllers.append(guard);
+    registerReflected(instance, guard);
+}
+
+void AgentQuayClient::registerReflected(QObject* instance, const QSharedPointer<QObject>& guard)
 {
     const std::vector<AgentToolMeta> metas = AgentToolRegistry::all();
     const QMetaObject* mo = instance->metaObject();
@@ -240,6 +274,7 @@ void AgentQuayClient::registerReflected(QObject* instance)
         info.confirmTimeoutSeconds = meta->options.confirmTimeoutSeconds;
         info.inputSchema = JsonSchemaGenerator::paramSchema(m);
         info.target = instance;
+        info.targetGuard = guard; // owned 注册时共享所有权；非拥有注册（用户保证存活）为空
         info.metaObject = mo;
         info.methodIndex = m.methodIndex();
         addToolInternal(std::move(info));
@@ -345,7 +380,8 @@ void AgentQuayClient::stop()
     // 注意：m_spawner 仅在 connect() 中创建——未调用 connect() 直接析构时为空
     if (m_spawner)
         m_spawner->shutdown();
-    // 等待执行中的 Tool 结束（避免析构后工作线程仍访问控制器）
+    // 等待执行中的 Tool 结束（尽力而为：超过 3s 的在途调用由 targetGuard
+    // 共享所有权保证控制器存活，不会因析构而 use-after-free）
     QThreadPool::globalInstance()->waitForDone(3000);
 }
 
@@ -557,16 +593,37 @@ void AgentQuayClient::handleInvoke(const QJsonObject& payload)
     pending.deadlineMs = nowMs() + qint64(timeoutSeconds + 5) * 1000;
     m_pending.insert(requestId, pending);
 
-    // 工作线程执行（Tool 方法需线程安全），完成后再回投主线程发送结果
+    // 触发工具调用钩子（在业务方法执行前）
+    if (m_toolCallHandler) {
+        QVariantMap argsMap;
+        for (auto it = args.constBegin(); it != args.constEnd(); ++it)
+            argsMap.insert(it.key(), it.value().toVariant());
+        try {
+            m_toolCallHandler(toolName, argsMap);
+        } catch (const std::exception& e) {
+            qWarning() << "[AgentQuay] toolCallHandler 异常:" << e.what();
+        } catch (...) {
+            qWarning() << "[AgentQuay] toolCallHandler 抛出未知异常";
+        }
+    }
+
+    // 工作线程执行（Tool 方法需线程安全），完成后再回投主线程发送结果。
+    // dispatchInvoke 为 static，不依赖客户端成员状态；控制器存活由 targetGuard 保证；
+    // 结果回投用 QPointer 守卫：客户端析构后工作线程不再触碰 this（避免 use-after-free）
     const ToolInfo copy = *tool;
-    QThreadPool::globalInstance()->start([this, copy, args, requestId] {
-        const InvokeResult res = dispatchInvoke(copy, args);
-        QMetaObject::invokeMethod(this, [this, requestId, res] {
-            auto it = m_pending.find(requestId);
-            if (it == m_pending.end())
+    const QPointer<AgentQuayClient> guard(this);
+    QThreadPool::globalInstance()->start([guard, copy, args, requestId] {
+        const InvokeResult res = AgentQuayClient::dispatchInvoke(copy, args);
+        if (guard.isNull())
+            return; // 客户端已析构：丢弃迟到结果（Bridge 侧按孤儿处理）
+        QMetaObject::invokeMethod(guard.data(), [guard, requestId, res] {
+            if (guard.isNull())
+                return;
+            auto it = guard->m_pending.find(requestId);
+            if (it == guard->m_pending.end())
                 return; // 已超时 → 孤儿结果，丢弃（对齐 Bridge 孤儿处理）
-            m_pending.erase(it);
-            sendResult(requestId, res.success, res.data, res.error());
+            guard->m_pending.erase(it);
+            guard->sendResult(requestId, res.success, res.data, res.error());
         }, Qt::QueuedConnection);
     });
 }
@@ -679,7 +736,7 @@ QVariant AgentQuayClient::invokeHandler(const ToolInfo& tool, const QJsonObject&
     return tool.handler(args.toVariantMap());
 }
 
-QVariant AgentQuayClient::invokeReflected(const ToolInfo& tool, const QJsonObject& args) const
+QVariant AgentQuayClient::invokeReflected(const ToolInfo& tool, const QJsonObject& args)
 {
     if (!tool.target || !tool.metaObject)
         throw ToolCallException(QString::fromLatin1(kInvokeErrCodeExecutionError),
@@ -721,10 +778,11 @@ QVariant AgentQuayClient::invokeReflected(const ToolInfo& tool, const QJsonObjec
         QVariant value = jsonToParamImpl(jsonValue, typeId);
         // 转换失败时回退目标类型默认值，避免 QGenericArgument 数据类型不匹配
         if (!value.isValid() || value.metaType().id() != typeId) {
-            // Qt 6.8: QVariant(int, void*) 被移除，改用 QMetaType::create + move
+            // Qt 6.8: QVariant(int, void*) 被移除，改用 QMetaType::create + copy
             void* tmp = QMetaType::create(typeId);
             if (tmp) {
                 value = QVariant(mt, tmp);
+                QMetaType(typeId).destroy(tmp); // QVariant 为拷贝构造，释放临时对象
             } else {
                 value = QVariant();
             }
@@ -749,7 +807,8 @@ QVariant AgentQuayClient::invokeReflected(const ToolInfo& tool, const QJsonObjec
             returnArg = QGenericReturnArgument(retTypeName.constData(), retData);
     }
 
-    // 注意：tool.target 的销毁由客户端生命周期保证（stop() 会等待工作线程结束）
+    // 注意：tool.target 的存活由 targetGuard 共享所有权保证（在途工作线程持有一份
+    // 引用），不依赖客户端生命周期——见 registerOwned()
     const bool ok = method.invoke(tool.target, Qt::DirectConnection, returnArg,
                                   genericArgs[0], genericArgs[1], genericArgs[2], genericArgs[3],
                                   genericArgs[4], genericArgs[5], genericArgs[6], genericArgs[7],

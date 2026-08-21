@@ -284,6 +284,11 @@ func (b *Bridge) dispatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 				cancelProgress()
 				return mcpError(MCPErrorUserCancelled, "用户取消了操作")
 			}
+		case res := <-pending.ResponseCh:
+			// 应用在确认期间断连/被替换：FailAllForApp 已把失败结果写入 ResponseCh。
+			// 立即返回（-32001/-32007），而不是等满确认超时（否则 Agent 会白等 120s）。
+			cancelProgress()
+			return b.toToolResult(res)
 		case <-time.After(confirmTimeout):
 			cancelProgress()
 			return mcpError(MCPErrorUserCancelled, "确认超时（用户未响应），已取消")
