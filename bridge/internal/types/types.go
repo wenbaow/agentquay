@@ -9,6 +9,9 @@ type ToolMetadata struct {
 	RequiresConfirmation  bool   `json:"requiresConfirmation"`
 	TimeoutSeconds        int    `json:"timeoutSeconds"`
 	ConfirmTimeoutSeconds int    `json:"confirmTimeoutSeconds"` // 默认 120
+	// PageKey 工具归属的页面分组标签（页面智能路由，V1 可选字段，旧 SDK 不传即空）。
+	// 仅供 SDK 内部路由与 tools/list 描述展示使用，不进 invoke 协议，Agent 无感知。
+	PageKey string `json:"pageKey,omitempty"`
 }
 
 // ErrorInfo 业务错误信息（应用返回，Bridge 透传）。

@@ -3,6 +3,7 @@ package com.agentquay;
 import com.agentquay.internal.Protocol;
 import com.fasterxml.jackson.databind.JsonNode;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutorService;
@@ -26,6 +28,8 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -68,7 +72,16 @@ public class AgentQuayClient implements AutoCloseable {
     /** 上报给 Bridge 的启动命令（§5.8，离线自动拉起用）。 */
     private final LaunchInfo launchInfo;
 
-    private final List<ToolMetadata> tools = new ArrayList<>();
+    private final List<ToolBinding> tools = new ArrayList<>();
+    /** 页面路由（页面智能路由 §4.2）：pageKey → 创建中的 CompletableFuture（单飞去重）。 */
+    private final ConcurrentHashMap<String, CompletableFuture<Object>> inflight = new ConcurrentHashMap<>();
+    /** 页面路由锁：每 key 一把（"查-建-换"与超时让出互斥，防重复创建）。 */
+    private final ConcurrentHashMap<String, Object> gates = new ConcurrentHashMap<>();
+    /** pageKey → 激活钩子（导航 / 就绪等待）。 */
+    private final ConcurrentHashMap<String, PageActivator> activators = new ConcurrentHashMap<>();
+    private volatile UIThreadDispatcher uiDispatcher;
+    /** 页面激活超时秒数（创建/导航/等待整体计时，默认 15s，方案 §2.3）。 */
+    private volatile int pageActivationTimeoutSeconds = 15;
     private final JsonSchemaGenerator schemaGen = new JsonSchemaGenerator();
     private final TokenStore tokenStore;
     private final BridgeSpawner spawner;
@@ -125,6 +138,83 @@ public class AgentQuayClient implements AutoCloseable {
         return registerTools(instance, instance.getClass());
     }
 
+    /**
+     * 惰性注册控制器类（页面智能路由 §3.2）：页面未打开工具也可见，首次调用才创建实例
+     * （需无参构造）。pageKey 只是 SDK 内部的分组标签，不进协议、Agent 无感知。
+     */
+    public AgentQuayClient registerTools(Class<?> controllerClass, String pageKey) {
+        requirePageKey(pageKey);
+        if (hasAnnotatedInstanceMethods(controllerClass) && !hasParameterlessCtor(controllerClass)) {
+            throw new IllegalArgumentException(
+                    "控制器含实例方法但无法实例化（需要可访问的无参构造）: "
+                            + controllerClass.getName());
+        }
+        return registerBindings(controllerClass, pageKey, null, () -> instantiate(controllerClass));
+    }
+
+    /**
+     * 惰性注册（显式工厂，DI 场景，页面智能路由）：首次调用经工厂创建实例。
+     * 与 C# {@code RegisterTools(Func<object>, pageKey)} / Python {@code register_tools_factory} 同构。
+     *
+     * @param controllerClass 控制器类（注解扫描与 schema 生成用）
+     * @param factory         创建页面实例的工厂（首次调用才执行）
+     * @param pageKey         页面分组标签
+     */
+    public AgentQuayClient registerToolsFactory(Class<?> controllerClass,
+                                                Supplier<Object> factory, String pageKey) {
+        requirePageKey(pageKey);
+        if (factory == null) {
+            throw new NullPointerException("factory");
+        }
+        return registerBindings(controllerClass, pageKey, null, factory);
+    }
+
+    /**
+     * 注册 pageKey 的激活钩子（页面智能路由 §3.2）：首次惰性创建后执行一次。
+     * navigate 在 UI 线程执行；awaitReady 返回 {@link CompletableFuture}（如 Loaded 事件），
+     * SDK 会等待其完成，实现必须异步等待、禁止阻塞。
+     */
+    public AgentQuayClient setPageActivator(String pageKey, Consumer<Object> navigate,
+                                            java.util.function.Function<Object, CompletableFuture<?>> awaitReady) {
+        requirePageKey(pageKey);
+        activators.put(pageKey, new PageActivator(navigate, awaitReady));
+        return this;
+    }
+
+    /** 页面关闭时显式注销：清除弱引用与激活钩子，工厂路径下次调用自动重建。
+     *  不调也行——弱引用 GC 后自动失效。 */
+    public AgentQuayClient unregisterPage(String pageKey) {
+        for (ToolBinding b : tools) {
+            if (pageKey.equals(b.pageKey)) {
+                b.live = null;
+            }
+        }
+        activators.remove(pageKey);
+        return this;
+    }
+
+    /** 注入 UI 线程调度器（页面智能路由 §5.2）：页面工具创建与调用在 UI 线程执行
+     * （Swing 场景可用 invokeAndWait 实现；null = 直接执行，无 UI 场景）。 */
+    public AgentQuayClient setUIThreadDispatcher(UIThreadDispatcher dispatcher) {
+        this.uiDispatcher = dispatcher;
+        return this;
+    }
+
+    /** 设置页面激活超时秒数（创建/导航/等待整体计时，默认 15s）。 */
+    public AgentQuayClient setPageActivationTimeoutSeconds(int seconds) {
+        if (seconds <= 0) {
+            throw new IllegalArgumentException("激活超时必须为正数");
+        }
+        this.pageActivationTimeoutSeconds = seconds;
+        return this;
+    }
+
+    private static void requirePageKey(String pageKey) {
+        if (pageKey == null || pageKey.isEmpty()) {
+            throw new IllegalArgumentException("pageKey 不能为空");
+        }
+    }
+
     private static Object instantiate(Class<?> clazz) {
         try {
             java.lang.reflect.Constructor<?> ctor = clazz.getDeclaredConstructor();
@@ -139,6 +229,15 @@ public class AgentQuayClient implements AutoCloseable {
         }
     }
 
+    private static boolean hasParameterlessCtor(Class<?> clazz) {
+        try {
+            clazz.getDeclaredConstructor();
+            return true;
+        } catch (NoSuchMethodException e) {
+            return false;
+        }
+    }
+
     private static boolean hasAnnotatedInstanceMethods(Class<?> clazz) {
         for (Method m : clazz.getMethods()) {
             if (m.getAnnotation(AgentTool.class) != null && !Modifier.isStatic(m.getModifiers())) {
@@ -148,7 +247,14 @@ public class AgentQuayClient implements AutoCloseable {
         return false;
     }
 
+    /** 立即绑定（原行为）：pageKey 为 null，target 直接持有。 */
     private AgentQuayClient registerTools(Object target, Class<?> clazz) {
+        return registerBindings(clazz, null, target, null);
+    }
+
+    /** 惰性注册：实例只在首次调用时经工厂创建，元数据立即入表。 */
+    private AgentQuayClient registerBindings(Class<?> clazz, String pageKey,
+                                             Object target, Supplier<Object> factory) {
         for (Method method : clazz.getMethods()) {
             AgentTool at = method.getAnnotation(AgentTool.class);
             if (at == null) {
@@ -159,16 +265,20 @@ public class AgentQuayClient implements AutoCloseable {
                 throw new IllegalArgumentException(
                         "tool 名 " + name + " 不符合规范 [a-zA-Z0-9_-]{1,78}");
             }
-            for (ToolMetadata t : tools) {
-                if (t.getName().equals(name)) {
-                    throw new IllegalArgumentException("tool 名重复: " + name);
+            for (ToolBinding t : tools) {
+                if (t.metadata.getName().equals(name)) {
+                    // 同一 appId 内工具名跨页面全局唯一（页面智能路由 §2.2）
+                    throw new IllegalArgumentException("tool 名重复（跨页面也须全局唯一）: " + name);
                 }
             }
             Map<String, Object> schema = schemaGen.paramSchema(method);
-            Object invokeTarget = Modifier.isStatic(method.getModifiers()) ? null : target;
-            tools.add(new ToolMetadata(name, at.description(), schema,
-                    at.requiresConfirmation(), at.timeoutSeconds(), at.confirmTimeoutSeconds(),
-                    invokeTarget, method));
+            boolean isStatic = Modifier.isStatic(method.getModifiers());
+            Object invokeTarget = isStatic ? null : target;
+            tools.add(new ToolBinding(
+                    new ToolMetadata(name, at.description(), schema,
+                            at.requiresConfirmation(), at.timeoutSeconds(), at.confirmTimeoutSeconds(),
+                            invokeTarget, method),
+                    pageKey, isStatic ? null : target, isStatic ? null : factory));
             LOG.fine("已登记 tool: " + name);
         }
         return this;
@@ -177,8 +287,8 @@ public class AgentQuayClient implements AutoCloseable {
     /** 已登记的 tool 名列表。 */
     public List<String> listTools() {
         List<String> names = new ArrayList<>();
-        for (ToolMetadata t : tools) {
-            names.add(t.getName());
+        for (ToolBinding t : tools) {
+            names.add(t.metadata.getName());
         }
         return names;
     }
@@ -311,14 +421,20 @@ public class AgentQuayClient implements AutoCloseable {
 
     private void register(WebSocket socket) throws Exception {
         List<Map<String, Object>> toolsMeta = new ArrayList<>();
-        for (ToolMetadata t : tools) {
-            toolsMeta.add(Map.of(
-                    "name", t.getName(),
-                    "description", t.getDescription(),
-                    "inputSchema", t.getInputSchema(),
-                    "requiresConfirmation", t.isRequiresConfirmation(),
-                    "timeoutSeconds", t.getTimeoutSeconds(),
-                    "confirmTimeoutSeconds", t.getConfirmTimeoutSeconds()));
+        for (ToolBinding b : tools) {
+            ToolMetadata t = b.metadata;
+            // Map.of 不允许 null：pageKey 可选，用 LinkedHashMap 拼接
+            Map<String, Object> meta = new LinkedHashMap<>();
+            meta.put("name", t.getName());
+            meta.put("description", t.getDescription());
+            meta.put("inputSchema", t.getInputSchema());
+            meta.put("requiresConfirmation", t.isRequiresConfirmation());
+            meta.put("timeoutSeconds", t.getTimeoutSeconds());
+            meta.put("confirmTimeoutSeconds", t.getConfirmTimeoutSeconds());
+            if (b.pageKey != null) {
+                meta.put("pageKey", b.pageKey); // 可选分组标签（页面智能路由，旧 SDK 不传即空）
+            }
+            toolsMeta.add(meta);
         }
         socket.sendText(Protocol.encode(Protocol.MSG_REGISTER, Protocol.registerPayload(
                 appId, appName, version, protocolVersion, token, toolsMeta,
@@ -404,7 +520,7 @@ public class AgentQuayClient implements AutoCloseable {
         int timeoutSeconds = payload.path("timeoutSeconds").asInt(30);
         JsonNode args = payload.path("arguments");
 
-        ToolMetadata tool = findTool(toolName);
+        ToolBinding tool = findTool(toolName);
         if (tool == null) {
             sendResult(socket, requestId, false, null,
                     Map.of("code", "TOOL_NOT_FOUND", "message", "tool 不存在: " + toolName));
@@ -433,38 +549,171 @@ public class AgentQuayClient implements AutoCloseable {
             sendResult(socket, requestId, false, null,
                     Map.of("code", "EXECUTION_TIMEOUT", "message", "执行超时（>" + timeoutSeconds + "s）"));
         } catch (Throwable e) {
-            LOG.log(Level.WARNING, "tool 执行异常: " + toolName, e);
-            sendResult(socket, requestId, false, null,
-                    Map.of("code", "EXECUTION_ERROR", "message", String.valueOf(rootMessage(e))));
+            Throwable cause = unwrap(e);
+            // 页面智能路由错误语义（方案 §6.4）：激活类错误复用 isError 结构化 JSON
+            if (cause instanceof AgentQuayException.PageActivationTimeoutException) {
+                sendResult(socket, requestId, false, null,
+                        Map.of("code", "PAGE_ACTIVATION_TIMEOUT", "message", String.valueOf(cause.getMessage())));
+            } else if (cause instanceof AgentQuayException.PageNotFoundException) {
+                sendResult(socket, requestId, false, null,
+                        Map.of("code", "PAGE_NOT_FOUND", "message", String.valueOf(cause.getMessage())));
+            } else if (cause instanceof AgentQuayException.PageActivationException) {
+                sendResult(socket, requestId, false, null,
+                        Map.of("code", "PAGE_ACTIVATION_FAILED", "message", String.valueOf(cause.getMessage())));
+            } else {
+                LOG.log(Level.WARNING, "tool 执行异常: " + toolName, e);
+                sendResult(socket, requestId, false, null,
+                        Map.of("code", "EXECUTION_ERROR", "message", String.valueOf(rootMessage(e))));
+            }
         }
     }
 
-    private Object invokeWithTimeout(ToolMetadata tool, JsonNode args, int timeoutSeconds)
+    private Object invokeWithTimeout(ToolBinding binding, JsonNode args, int timeoutSeconds)
             throws Exception {
         // 超时上限 = Bridge 侧执行超时 + 5s 余量（保证 Bridge 先超时，迟到结果进孤儿处理）
         return executor.submit(() -> {
             try {
-                return invokeSync(tool, args);
+                return invokeSync(binding, args);
             } catch (Throwable e) {
                 throw new CompletionException(e);
             }
         }).get(timeoutSeconds + 5L, TimeUnit.SECONDS);
     }
 
-    private Object invokeSync(ToolMetadata tool, JsonNode args) throws Exception {
-        Method method = tool.getMethod();
+    /**
+     * 调用分发核心（页面智能路由 §4.2）：实例存活直接调；无实例有工厂则单飞创建
+     * （UI 线程、带激活超时）；无实例无工厂抛 PageNotFoundException（工具仍在表内）。
+     */
+    // 包可见（同 C# internal DispatchAsync）：单测直接驱动路由核心
+    Object invokeSync(ToolBinding binding, JsonNode args) throws Exception {
+        Method method = binding.method();
+        Object target;
+        if (Modifier.isStatic(method.getModifiers())) {
+            target = null; // 静态方法无需实例
+        } else {
+            target = binding.instance != null ? binding.instance : binding.liveTarget();
+            if (target == null && binding.factory != null) {
+                target = getOrCreate(binding);
+            }
+            if (target == null) {
+                throw new AgentQuayException.PageNotFoundException(
+                        "页面 '" + binding.pageKey + "' 未打开且无工厂，无法调用");
+            }
+        }
+        // 页面工具且有 UI 调度器 → UI 线程执行（Swing 场景）；否则线程池执行（原行为）
+        final Object invokeTarget = target; // lambda 捕获要求 effectively final
+        if (uiDispatcher != null && binding.pageKey != null) {
+            return uiDispatcher.dispatch(() -> invokeMethod(binding, invokeTarget, args));
+        }
+        return invokeMethod(binding, invokeTarget, args);
+    }
+
+    private Object invokeMethod(ToolBinding binding, Object target, JsonNode args) throws Exception {
+        Method method = binding.method();
         try {
             method.setAccessible(true);
         } catch (Exception ignored) {
             // 模块系统限制时保持原访问性
         }
         Object[] bound = bindArguments(method, args);
-        Object result = method.invoke(tool.getTarget(), bound);
+        Object result = method.invoke(target, bound);
         // 异步方法 unwrap：CompletableFuture → 等待结果
         if (result instanceof CompletableFuture) {
             return ((CompletableFuture<?>) result).join();
         }
         return result;
+    }
+
+    /**
+     * 单飞去重（页面智能路由 §4.2）：并发调用合并等待同一个创建任务，不会建出两个页面；
+     * 任务完成（成功或失败）后回 NotLoaded，下次调用重建；超时让出槽位（底层激活继续，
+     * 与"页面已导航但调用超时"的孤儿机制一致）。
+     */
+    private Object getOrCreate(ToolBinding binding) throws Exception {
+        String key = binding.pageKey != null ? binding.pageKey : binding.name();
+        Object gate = gates.computeIfAbsent(key, k -> new Object());
+        CompletableFuture<Object> task;
+        synchronized (gate) {
+            CompletableFuture<Object> existing = inflight.get(key);
+            if (existing == null || existing.isDone()) {
+                task = new CompletableFuture<>();
+                inflight.put(key, task);
+                executor.submit(() -> runActivation(binding, key, task));
+            } else {
+                task = existing;
+            }
+        }
+        try {
+            return task.get(pageActivationTimeoutSeconds, TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException e) {
+            // 激活异常原样透传（去掉 CompletableFuture 的 ExecutionException 外壳）
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new AgentQuayException.PageActivationException(
+                    "页面激活失败: " + cause, cause);
+        } catch (TimeoutException e) {
+            synchronized (gate) {
+                if (inflight.get(key) == task) {
+                    inflight.remove(key);
+                }
+            }
+            throw new AgentQuayException.PageActivationTimeoutException(
+                    "页面激活超时（>" + pageActivationTimeoutSeconds + "s，pageKey=" + key + "）");
+        }
+    }
+
+    private void runActivation(ToolBinding binding, String key, CompletableFuture<Object> task) {
+        try {
+            task.complete(activate(binding));
+        } catch (Throwable t) {
+            task.completeExceptionally(t);
+        }
+    }
+
+    /** 激活：工厂创建 → 可选导航 → 等待就绪。UI 线程执行；成功后先设置弱引用再返回。
+     *  工厂/导航/就绪任一抛异常 → PageActivationException（PAGE_ACTIVATION_FAILED）。 */
+    private Object activate(ToolBinding binding) throws Exception {
+        try {
+            java.util.concurrent.Callable<Object> act = () -> {
+                Object instance = binding.factory.get();
+                if (instance == null) {
+                    throw new AgentQuayException.PageActivationException(
+                            "页面工厂返回 null（pageKey=" + binding.pageKey + "）");
+                }
+                PageActivator pa = binding.pageKey != null ? activators.get(binding.pageKey) : null;
+                if (pa != null) {
+                    if (pa.navigate != null) {
+                        pa.navigate.accept(instance);
+                    }
+                    if (pa.awaitReady != null) {
+                        pa.awaitReady.apply(instance).join(); // 异步等待就绪，禁止阻塞 UI
+                    }
+                }
+                return instance;
+            };
+            Object page = (uiDispatcher != null && binding.pageKey != null)
+                    ? uiDispatcher.dispatch(act)
+                    : act.call();
+            binding.live = new WeakReference<>(page);
+            return page;
+        } catch (AgentQuayException.PageActivationException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new AgentQuayException.PageActivationException(
+                    "页面激活失败（pageKey=" + binding.pageKey + "）: " + rootMessage(e), e);
+        }
+    }
+
+    /** 剥离 Execution/Completion 包装，取原始异常（错误映射用）。 */
+    private static Throwable unwrap(Throwable e) {
+        Throwable cause = e;
+        while ((cause instanceof java.util.concurrent.ExecutionException
+                || cause instanceof CompletionException) && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     /** 按参数名将 JSON arguments 绑定到方法参数（Jackson 做类型转换）。 */
@@ -535,9 +784,10 @@ public class AgentQuayClient implements AutoCloseable {
         }
     }
 
-    private ToolMetadata findTool(String name) {
-        for (ToolMetadata t : tools) {
-            if (t.getName().equals(name)) {
+    // 包可见：单测按名取绑定
+    ToolBinding findTool(String name) {
+        for (ToolBinding t : tools) {
+            if (t.metadata.getName().equals(name)) {
                 return t;
             }
         }

@@ -54,7 +54,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
     /// <summary>上报给 Bridge 的启动命令（§5.8，离线自动拉起用）。</summary>
     private readonly LaunchInfo? _launchInfo;
 
-    private readonly List<ToolMetadata> _tools = new();
+    internal readonly List<ToolBinding> _tools = new(); // internal：单测可见（页面路由验收）
     private readonly JsonSchemaGenerator _schemaGen = new();
     private readonly TokenStore _tokenStore;
     private readonly BridgeSpawner _spawner;
@@ -62,9 +62,18 @@ public sealed class AgentQuayClient : IAsyncDisposable
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly byte[] _receiveBuffer = new byte[64 * 1024];
 
+    /// <summary>页面路由表（页面智能路由 §4.1：单飞创建 + 激活钩子）。</summary>
+    private readonly PageRouter _router = new();
+
+    /// <summary>UI 线程调度器（可选；WPF 等图形框架经 <see cref="SetUIThreadDispatcher"/> 注入）。</summary>
+    private volatile IUIThreadDispatcher? _dispatcher;
+
     private volatile ClientWebSocket? _ws;
     private volatile string? _token;
     private volatile bool _stopRequested;
+
+    /// <summary>页面激活超时（创建/导航/等待整体计时，默认 15s，页面智能路由 §2.3）。</summary>
+    public int PageActivationTimeoutSeconds { get; set; } = 15;
 
     private AgentQuayClient(string appId, string appName, string host, int port, bool autoSpawnBridge,
                             string version, string protocolVersion,
@@ -150,7 +159,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
     // 工具注册
     // ------------------------------------------------------------------
 
-    /// <summary>注册控制器（Type 扫描；含实例方法时尝试实例化，仅静态方法时无需实例）。</summary>
+/// <summary>注册控制器（Type 扫描；含实例方法时尝试实例化，仅静态方法时无需实例）。</summary>
     public AgentQuayClient RegisterTools<T>() => RegisterTools(typeof(T));
 
     /// <summary>注册控制器类型（自动实例化：无参构造，含私有；仅静态方法时无需实例）。</summary>
@@ -159,9 +168,98 @@ public sealed class AgentQuayClient : IAsyncDisposable
     /// <summary>注册控制器实例（推荐：控制器持有状态时用实例注册）。</summary>
     public AgentQuayClient RegisterTools(object instance) => RegisterTools(instance.GetType(), instance);
 
-    /// <summary>已登记的 tool 名列表。</summary>
-    public IReadOnlyList<string> ListTools() => _tools.Select(t => t.Name).ToList();
+    /// <summary>
+    /// 惰性注册控制器类型（页面智能路由 §3.2）：页面未打开工具也可见，首次调用才创建实例（需无参构造）。
+    /// <paramref name="pageKey"/> 只是 SDK 内部的分组标签，不进协议、Agent 无感知。
+    /// </summary>
+    public AgentQuayClient RegisterTools<T>(string pageKey) => RegisterTools(typeof(T), pageKey);
 
+    /// <summary>惰性注册控制器类型（页面智能路由）：首次调用经 <paramref name="pageKey"/> 创建实例（需无参构造）。</summary>
+    public AgentQuayClient RegisterTools(Type controllerType, string pageKey)
+    {
+        if (string.IsNullOrWhiteSpace(pageKey))
+        {
+            throw new ArgumentException("pageKey 不能为空", nameof(pageKey));
+        }
+        if (HasAnnotatedInstanceMethods(controllerType) && !HasParameterlessCtor(controllerType))
+        {
+            throw new InvalidOperationException(
+                $"控制器含实例方法但无法实例化（需要可访问的无参构造）: {controllerType.FullName}");
+        }
+        return RegisterLazy(controllerType, pageKey,
+            () => Instantiate(controllerType) ?? throw new PageActivationException(
+                $"页面工厂无法实例化（需要可访问的无参构造）: {controllerType.FullName}"));
+    }
+
+    /// <summary>惰性注册（显式工厂，DI 场景）：首次调用经工厂创建实例（页面智能路由 §3.2）。</summary>
+    public AgentQuayClient RegisterTools(Func<object> factory, string pageKey)
+    {
+        if (factory == null)
+        {
+            throw new ArgumentNullException(nameof(factory));
+        }
+        if (string.IsNullOrWhiteSpace(pageKey))
+        {
+            throw new ArgumentException("pageKey 不能为空", nameof(pageKey));
+        }
+        Type controllerType = factory.Method.ReturnType;
+        if (controllerType == typeof(object))
+        {
+            throw new ArgumentException("工厂返回类型必须是具体控制器类型（object 无法扫描注解）", nameof(factory));
+        }
+        return RegisterLazy(controllerType, pageKey, factory);
+    }
+
+    /// <summary>
+    /// 注册 pageKey 的激活钩子（页面智能路由 §3.2）：首次惰性创建后执行一次。
+    /// <paramref name="navigate"/> 在 UI 线程执行（无 UI 调度器时直接执行）；
+    /// <paramref name="awaitReady"/> 必须是异步等待（如 Loaded 事件），禁止阻塞。
+    /// 不注册则跳过导航，仅创建实例。
+    /// </summary>
+    public AgentQuayClient SetPageActivator(string pageKey, Action<object>? navigate, Func<object, Task>? awaitReady = null)
+    {
+        if (string.IsNullOrWhiteSpace(pageKey))
+        {
+            throw new ArgumentException("pageKey 不能为空", nameof(pageKey));
+        }
+        _router.SetActivator(pageKey, navigate, awaitReady);
+        return this;
+    }
+
+    /// <summary>
+    /// 页面关闭时显式注销（页面智能路由 §3.2）：清除弱引用与激活钩子，
+    /// 工厂路径下次调用自动重建。不调也行——弱引用 GC 后自动失效，无谓复用闭环由 GC 兜底。
+    /// </summary>
+    public AgentQuayClient UnregisterPage(string pageKey)
+    {
+        foreach (ToolBinding t in _tools)
+        {
+            if (t.PageKey == pageKey)
+            {
+                t.Live = null;
+            }
+        }
+        _router.RemoveActivator(pageKey);
+        return this;
+    }
+
+    /// <summary>
+    /// 注入 UI 线程调度器（页面智能路由 §5.2）：页面工具创建与调用在 UI 线程执行，
+    /// 且异步让出不阻塞 UI。核心包只定义接口，框架实现见扩展包（AgentQuay.Sdk.Wpf 等）。
+    /// </summary>
+    public AgentQuayClient SetUIThreadDispatcher(IUIThreadDispatcher? dispatcher)
+    {
+        _dispatcher = dispatcher;
+        _router.Dispatcher = dispatcher;
+        return this;
+    }
+
+    /// <summary>已登记的 tool 名列表。</summary>
+    public IReadOnlyList<string> ListTools() => _tools.Select(t => t.Metadata.Name).ToList();
+
+    // ---- 注册内部实现 ----
+
+    // 立即绑定（原行为）：pageKey 为 null，实例直接持有
     private AgentQuayClient RegisterTools(Type controllerType, object? instance)
     {
         if (instance == null && HasAnnotatedInstanceMethods(controllerType))
@@ -169,7 +267,19 @@ public sealed class AgentQuayClient : IAsyncDisposable
             throw new InvalidOperationException(
                 $"控制器含实例方法但无法实例化（需要可访问的无参构造）: {controllerType.FullName}");
         }
+        ScanTools(controllerType, pageKey: null, instance, factory: null);
+        return this;
+    }
 
+    // 惰性注册：实例只在首次调用时经工厂创建，元数据立即入表
+    private AgentQuayClient RegisterLazy(Type controllerType, string pageKey, Func<object>? factory)
+    {
+        ScanTools(controllerType, pageKey, instance: null, factory);
+        return this;
+    }
+
+    private void ScanTools(Type controllerType, string? pageKey, object? instance, Func<object>? factory)
+    {
         foreach (MethodInfo method in controllerType.GetMethods(
                      BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static))
         {
@@ -183,18 +293,24 @@ public sealed class AgentQuayClient : IAsyncDisposable
             {
                 throw new ArgumentException($"tool 名 {name} 不符合规范 [a-zA-Z0-9_-]{{1,78}}");
             }
-            if (_tools.Any(t => t.Name == name))
+            if (_tools.Any(t => t.Metadata.Name == name))
             {
-                throw new ArgumentException("tool 名重复: " + name);
+                // 同一 appId 内工具名跨页面全局唯一（页面智能路由 §2.2）
+                throw new ArgumentException("tool 名重复（跨页面也须全局唯一）: " + name);
             }
             var schema = _schemaGen.ParamSchema(method);
-            object? target = method.IsStatic ? null : instance;
-            _tools.Add(new ToolMetadata(name, at.Description ?? "", schema,
+            bool isStatic = method.IsStatic;
+            object? target = isStatic ? null : instance;
+            var metadata = new ToolMetadata(name, at.Description ?? "", schema,
                 at.RequiresConfirmation, at.TimeoutSeconds, at.ConfirmTimeoutSeconds,
-                target, method));
+                target, method);
+            _tools.Add(new ToolBinding(metadata, pageKey, isStatic ? null : instance, isStatic ? null : factory));
         }
-        return this;
     }
+
+    private static bool HasParameterlessCtor(Type type) =>
+        type.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null, Type.EmptyTypes, null) != null;
 
     private static object? Instantiate(Type type)
     {
@@ -393,14 +509,22 @@ public sealed class AgentQuayClient : IAsyncDisposable
 
     private async Task RegisterAsync(ClientWebSocket ws, CancellationToken ct)
     {
-        var toolsMeta = new JsonArray(_tools.Select(t => (JsonNode)new JsonObject
+        var toolsMeta = new JsonArray(_tools.Select(t =>
         {
-            ["name"] = t.Name,
-            ["description"] = t.Description,
-            ["inputSchema"] = t.InputSchema,
-            ["requiresConfirmation"] = t.RequiresConfirmation,
-            ["timeoutSeconds"] = t.TimeoutSeconds,
-            ["confirmTimeoutSeconds"] = t.ConfirmTimeoutSeconds,
+            var obj = new JsonObject
+            {
+                ["name"] = t.Metadata.Name,
+                ["description"] = t.Metadata.Description,
+                ["inputSchema"] = t.Metadata.InputSchema,
+                ["requiresConfirmation"] = t.Metadata.RequiresConfirmation,
+                ["timeoutSeconds"] = t.Metadata.TimeoutSeconds,
+                ["confirmTimeoutSeconds"] = t.Metadata.ConfirmTimeoutSeconds,
+            };
+            if (t.PageKey != null)
+            {
+                obj["pageKey"] = t.PageKey; // 可选分组标签（页面智能路由，旧 SDK 不传即空）
+            }
+            return (JsonNode)obj;
         }).ToArray());
 
         await SendAsync(ws, Protocol.MsgRegister,
@@ -534,6 +658,21 @@ public sealed class AgentQuayClient : IAsyncDisposable
             object? result = await InvokeWithTimeoutAsync(tool, args, timeoutSeconds, ct).ConfigureAwait(false);
             await SendResultAsync(ws, requestId, true, result, null, ct).ConfigureAwait(false);
         }
+        catch (PageActivationTimeoutException e)
+        {
+            await SendResultAsync(ws, requestId, false, null,
+                Error("PAGE_ACTIVATION_TIMEOUT", e.Message), ct).ConfigureAwait(false);
+        }
+        catch (PageNotFoundException e)
+        {
+            await SendResultAsync(ws, requestId, false, null,
+                Error("PAGE_NOT_FOUND", e.Message), ct).ConfigureAwait(false);
+        }
+        catch (PageActivationException e)
+        {
+            await SendResultAsync(ws, requestId, false, null,
+                Error("PAGE_ACTIVATION_FAILED", e.Message), ct).ConfigureAwait(false);
+        }
         catch (TimeoutException)
         {
             await SendResultAsync(ws, requestId, false, null,
@@ -546,15 +685,14 @@ public sealed class AgentQuayClient : IAsyncDisposable
         }
     }
 
-    private async Task<object?> InvokeWithTimeoutAsync(ToolMetadata tool, JsonNode? args, int timeoutSeconds, CancellationToken ct)
+    private async Task<object?> InvokeWithTimeoutAsync(ToolBinding tool, JsonNode? args, int timeoutSeconds, CancellationToken ct)
     {
         // 超时上限 = Bridge 侧执行超时 + 5s 余量（保证 Bridge 先超时，迟到结果进孤儿处理）
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds + 5));
         try
         {
-            var invocation = Task.Run(() => InvokeSync(tool, args), ct);
-            return await invocation.WaitAsync(timeoutCts.Token).ConfigureAwait(false);
+            return await DispatchAsync(tool, args, ct).WaitAsync(timeoutCts.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -562,19 +700,59 @@ public sealed class AgentQuayClient : IAsyncDisposable
         }
     }
 
-    private object? InvokeSync(ToolMetadata tool, JsonNode? args)
+    /// <summary>
+    /// 调用分发核心（页面智能路由 §4.2）：
+    /// 1. 已有实例（立即绑定或弱引用存活）→ 直接调用；
+    /// 2. 无实例但有工厂 → 单飞去创建（UI 线程、异步不阻塞、带激活超时）；
+    /// 3. 无实例无工厂 → <see cref="PageNotFoundException"/>（工具仍在表内，Agent 收到明确错误）。
+    /// </summary>
+    internal async Task<object?> DispatchAsync(ToolBinding binding, JsonNode? args, CancellationToken ct)
     {
-        object?[] bound = BindArguments(tool.Method, args);
-        try
+        // 静态方法无需实例：直接调用（静态控制器注册时 Factory 为 null，不能误判为"无页面"）
+        if (binding.Method.IsStatic)
         {
-            return UnwrapResult(tool.Method.Invoke(tool.Target, bound));
+            return await InvokeOnTargetAsync(binding, target: null, args).ConfigureAwait(false);
         }
-        catch (TargetInvocationException e) when (e.InnerException != null)
+
+        object? target = binding.Instance ?? binding.LiveTarget();
+        if (target == null && binding.Factory != null)
         {
-            // 方法内部异常：unwrap 后原样抛出（与调用者直接抛出一致）
-            ExceptionDispatchInfo.Capture(e.InnerException).Throw();
-            throw; // 不可达
+            target = await _router.GetOrCreateAsync(binding, PageActivationTimeoutSeconds, ct).ConfigureAwait(false);
         }
+        if (target == null)
+        {
+            throw new PageNotFoundException($"页面 '{binding.PageKey}' 未打开且无工厂，无法调用");
+        }
+
+        return await InvokeOnTargetAsync(binding, target, args).ConfigureAwait(false);
+    }
+
+    /// <summary>在目标实例上执行方法：有 UI 调度器的页面工具走 UI 线程（异步让出），其余线程池执行（原行为）。</summary>
+    private async Task<object?> InvokeOnTargetAsync(ToolBinding binding, object? target, JsonNode? args)
+    {
+        var invoke = async () =>
+        {
+            var parameters = BindArguments(binding.Method, args);
+            object? result;
+            try
+            {
+                result = binding.Method.Invoke(target, parameters);
+            }
+            catch (TargetInvocationException e) when (e.InnerException != null)
+            {
+                // 方法内部异常：unwrap 后原样抛出（与调用者直接抛出一致）
+                ExceptionDispatchInfo.Capture(e.InnerException).Throw();
+                throw; // 不可达
+            }
+            return await UnwrapAsync(result).ConfigureAwait(false); // await 让出，不做同步阻塞取结果
+        };
+
+        if (_dispatcher != null && binding.PageKey != null)
+        {
+            // 页面工具：UI 线程执行，async 期间让出 UI 线程，动画照常跑
+            return await _dispatcher.DispatchAsync(invoke).ConfigureAwait(false);
+        }
+        return await Task.Run(invoke).ConfigureAwait(false);
     }
 
     /// <summary>按参数名将 JSON arguments 绑定到方法参数（System.Text.Json 做类型转换）。</summary>
@@ -655,41 +833,39 @@ public sealed class AgentQuayClient : IAsyncDisposable
 
     /// <summary>
     /// 异步方法 unwrap：Task / Task&lt;T&gt; / ValueTask / ValueTask&lt;T&gt; 取结果（设计文档 §4.2）。
+    /// await 让出线程，不做同步阻塞取结果——UI 线程场景不冻结动画。
     /// </summary>
-    private static object? UnwrapResult(object? result)
+    private static async Task<object?> UnwrapAsync(object? result)
     {
-        if (result is Task task)
+        switch (result)
         {
-            return UnwrapTask(task);
-        }
-        if (result is ValueTask valueTask)
-        {
-            return UnwrapTask(valueTask.AsTask());
-        }
-        if (result != null)
-        {
-            var type = result.GetType();
-            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ValueTask<>))
+            case Task task:
+                return await UnwrapTaskAsync(task).ConfigureAwait(false);
+            case ValueTask valueTask:
+                await valueTask.ConfigureAwait(false);
+                return null;
+            default:
             {
-                var asTask = type.GetMethod("AsTask");
-                if (asTask != null && asTask.Invoke(result, null) is Task t)
+                if (result != null && result.GetType().IsGenericType &&
+                    result.GetType().GetGenericTypeDefinition() == typeof(ValueTask<>))
                 {
-                    return UnwrapTask(t);
+                    // ValueTask<T>：经 AsTask() 统一走 Task 路径（boxed 值类型实例方法可用反射调用）
+                    var asTask = result.GetType().GetMethod("AsTask");
+                    if (asTask != null && asTask.Invoke(result, null) is Task t)
+                    {
+                        return await UnwrapTaskAsync(t).ConfigureAwait(false);
+                    }
                 }
+                return result;
             }
         }
-        return result;
     }
 
-    private static object? UnwrapTask(Task task)
+    private static async Task<object?> UnwrapTaskAsync(Task task)
     {
-        task.GetAwaiter().GetResult(); // 先等待完成并抛出原始异常（不包 AggregateException）
+        await task.ConfigureAwait(false); // 等待完成并抛出原始异常（不包 AggregateException）
         var type = task.GetType();
-        if (type.IsGenericType)
-        {
-            return type.GetProperty("Result")?.GetValue(task);
-        }
-        return null;
+        return type.IsGenericType ? type.GetProperty("Result")?.GetValue(task) : null;
     }
 
     private async Task SendResultAsync(ClientWebSocket ws, string requestId, bool success,
@@ -748,7 +924,7 @@ public sealed class AgentQuayClient : IAsyncDisposable
         }
     }
 
-    private ToolMetadata? FindTool(string name) => _tools.FirstOrDefault(t => t.Name == name);
+    private ToolBinding? FindTool(string name) => _tools.FirstOrDefault(t => t.Metadata.Name == name);
 
     private static JsonObject Error(string code, string message) => new()
     {

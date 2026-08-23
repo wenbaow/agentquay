@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import inspect
 import json
 import logging
 import os
@@ -15,6 +16,8 @@ import re
 import subprocess
 import sys
 import time
+import typing
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -28,6 +31,9 @@ from .errors import (
     BridgeConnectionError,
     BridgeUnavailableError,
     ConfirmationError,
+    PageActivationError,
+    PageActivationTimeoutError,
+    PageNotFoundError,
     ProtocolError,
     RegistrationError,
     ReplacedError,
@@ -56,7 +62,7 @@ _MSG_NOTIFICATION = "notification"
 
 @dataclass
 class ToolBinding:
-    """已绑定实例方法的 Tool。"""
+    """已绑定实例方法的 Tool（页面智能路由：元数据静态、实例绑定惰性化）。"""
 
     name: str
     description: str
@@ -64,8 +70,14 @@ class ToolBinding:
     requires_confirmation: bool
     timeout_seconds: int
     confirm_timeout_seconds: int
-    func: Callable[..., Any]  # 已绑定方法
+    func: Callable[..., Any]  # 已绑定方法（立即注册）或原始函数（惰性注册）
     is_async: bool = field(default=False)
+    page_key: str | None = field(default=None)  # 可选分组标签（仅 SDK 内部路由用）
+    # ---- 实例绑定（二选一：立即实例 / 惰性工厂）----
+    instance: Any | None = field(default=None, repr=False)  # 立即绑定（已开页面）
+    factory: Callable[[], Any] | None = field(default=None, repr=False)  # 惰性工厂
+    live: "weakref.ref | None" = field(default=None, repr=False)  # 惰性激活后的弱引用
+    member_name: str | None = field(default=None)  # 惰性注册：从目标实例按名取方法（自动绑定）
 
 
 @dataclass
@@ -125,6 +137,8 @@ class AgentQuayClient:
     :param auto_report_launch: 是否在注册时上报 launch 信息（默认 True）
     :param on_confirm: 自定义确认回调 async (message, arguments) -> bool，
         缺省使用 OS 原生弹窗
+    :param page_activation_timeout: 页面激活超时秒数（默认 15，创建/导航/等待整体计时，
+        页面智能路由 §2.3）
     """
 
     def __init__(
@@ -142,6 +156,7 @@ class AgentQuayClient:
         auto_report_launch: bool = True,
         on_confirm: Callable[..., Any] | None = None,
         on_tool_call: Callable[[str, dict[str, Any]], None] | None = None,
+        page_activation_timeout: float = 15.0,
     ) -> None:
         if not APP_ID_PATTERN.match(app_id):
             raise ValueError(
@@ -158,9 +173,13 @@ class AgentQuayClient:
         self.max_retry_interval = max_retry_interval
         self.on_confirm = on_confirm
         self.on_tool_call = on_tool_call
+        self.page_activation_timeout = page_activation_timeout
         self._launch_info = launch_info or (default_launch_info() if auto_report_launch else None)
 
         self._tools: dict[str, ToolBinding] = {}
+        # 页面路由（页面智能路由 §4.2）：page_key → 创建中的任务（单飞去重）；激活钩子表
+        self._inflight: dict[str, "asyncio.Task[Any]"] = {}
+        self._activators: dict[str, tuple[Callable[[Any], Any] | None, Callable[[Any], Any] | None]] = {}
         self._token = TokenStore(app_id).get()
         self._ws: websockets.ClientConnection | None = None
         self._send_lock = asyncio.Lock()
@@ -175,11 +194,86 @@ class AgentQuayClient:
     # 工具注册
     # ------------------------------------------------------------------
 
-    def register_tools(self, instance: object) -> "AgentQuayClient":
-        """扫描实例上被 @agent_tool 标记的方法并登记。
+    def register_tools(
+        self,
+        instance: object | type,
+        page_key: str | None = None,
+    ) -> "AgentQuayClient":
+        """登记被 @agent_tool 标记的方法。
+
+        - 传**实例**：立即绑定（原行为，推荐持有状态时使用）；
+        - 传**类**且不带 page_key：立即实例化后绑定（需无参构造）；
+        - 传**类**且带 page_key：**惰性注册**（页面智能路由）——页面未打开工具也可见，
+          首次调用才创建实例（需无参构造），page_key 只是 SDK 内部的分组标签。
 
         :return: self（支持链式调用）
         """
+        if isinstance(instance, type):
+            if page_key:
+                return self._register_lazy(
+                    instance, page_key, factory=lambda: instance()
+                )
+            instance = instance()  # 立即实例化（原 RegisterTools<T>() 语义）
+        return self._register_instance(instance)
+
+    def register_tools_factory(
+        self,
+        factory: Callable[[], Any],
+        page_key: str,
+    ) -> "AgentQuayClient":
+        """惰性注册（显式工厂，DI 场景，页面智能路由）。
+
+        工厂函数必须标注返回类型（``def build() -> PlayerPage``），SDK 从返回注解
+        扫描控制器并完成元数据静态注册；首次调用才执行工厂。
+
+        :param factory: 创建页面的工厂（0 参可调用，返回类型注解必须为具体控制器）
+        :param page_key: 页面分组标签（同一页面下的工具共享）
+        """
+        if not callable(factory):
+            raise TypeError("factory 必须是可调用对象")
+        if not page_key:
+            raise ValueError("page_key 不能为空")
+        # from __future__ import annotations 下注解是字符串，需 get_type_hints 解析
+        hints: dict[str, Any] = {}
+        try:
+            hints = typing.get_type_hints(factory)
+        except Exception:
+            pass
+        ret = hints.get("return", inspect.signature(factory).return_annotation)
+        if ret is inspect.Signature.empty or not isinstance(ret, type):
+            raise ValueError(
+                "工厂函数必须标注返回类型（如 -> PlayerPage），SDK 需要它扫描注解"
+            )
+        return self._register_lazy(ret, page_key, factory=factory)
+
+    def set_page_activator(
+        self,
+        page_key: str,
+        navigate: Callable[[Any], Any] | None = None,
+        await_ready: Callable[[Any], Any] | None = None,
+    ) -> "AgentQuayClient":
+        """注册 pageKey 的激活钩子（页面智能路由 §3.2）：首次惰性创建后执行一次。
+
+        :param navigate: 自定义导航（接收创建好的实例；可同步可协程）
+        :param await_ready: 自定义就绪等待（如 Loaded 事件，**必须异步等待**，禁止阻塞）
+        """
+        if not page_key:
+            raise ValueError("page_key 不能为空")
+        self._activators[page_key] = (navigate, await_ready)
+        return self
+
+    def unregister_page(self, page_key: str) -> "AgentQuayClient":
+        """页面关闭时显式注销：清除弱引用与激活钩子，工厂路径下次调用自动重建。
+        不调也行——弱引用 GC 后自动失效。"""
+        for b in self._tools.values():
+            if b.page_key == page_key:
+                b.live = None
+        self._activators.pop(page_key, None)
+        return self
+
+    # ---- 注册内部实现 ----
+
+    def _register_instance(self, instance: object) -> "AgentQuayClient":
         for member_name in dir(instance):
             if member_name.startswith("__"):
                 continue
@@ -189,7 +283,7 @@ class AgentQuayClient:
                 continue
             if not callable(attr):
                 raise ValueError(f"{member_name} 被标记为 AgentTool 但不可调用")
-            self._tools[spec.name] = ToolBinding(
+            self._add_tool(ToolBinding(
                 name=spec.name,
                 description=spec.description,
                 input_schema=param_schema(spec.func or attr),
@@ -198,9 +292,50 @@ class AgentQuayClient:
                 confirm_timeout_seconds=spec.confirm_timeout_seconds,
                 func=attr,
                 is_async=asyncio.iscoroutinefunction(attr),
-            )
-            logger.debug("已登记 tool: %s", spec.name)
+                instance=instance,
+            ))
         return self
+
+    def _register_lazy(
+        self,
+        controller: type,
+        page_key: str,
+        factory: Callable[[], Any],
+    ) -> "AgentQuayClient":
+        for member_name in dir(controller):
+            if member_name.startswith("__"):
+                continue
+            raw = getattr(controller, member_name)  # 已绑定/静态/普通函数
+            spec: ToolSpec | None = getattr(raw, TOOL_ATTR, None)
+            if spec is None:
+                continue
+            if not callable(raw):
+                raise ValueError(f"{member_name} 被标记为 AgentTool 但不可调用")
+            # 首次调用才创建实例：调用时 getattr(instance, member_name) 自动绑定
+            # （实例方法 / 静态方法 / 类方法均正确），此处仅静态登记元数据与原始函数
+            self._add_tool(ToolBinding(
+                name=spec.name,
+                description=spec.description,
+                input_schema=param_schema(spec.func or raw),
+                requires_confirmation=spec.requires_confirmation,
+                timeout_seconds=spec.timeout_seconds,
+                confirm_timeout_seconds=spec.confirm_timeout_seconds,
+                func=raw,
+                is_async=asyncio.iscoroutinefunction(raw),
+                page_key=page_key,
+                factory=factory,
+                member_name=member_name,
+            ))
+        return self
+
+    def _add_tool(self, binding: ToolBinding) -> None:
+        if binding.name in self._tools:
+            # 同一 appId 内工具名跨页面全局唯一（页面智能路由 §2.2）
+            raise ValueError(
+                f"tool 名重复（跨页面也须全局唯一）: {binding.name}"
+            )
+        self._tools[binding.name] = binding
+        logger.debug("已登记 tool: %s", binding.name)
 
     def list_tools(self) -> list[str]:
         """返回已登记的 tool 名列表。"""
@@ -311,26 +446,7 @@ class AgentQuayClient:
                 pass
 
     async def _register(self, ws: websockets.ClientConnection) -> None:
-        payload = {
-            "appId": self.app_id,
-            "appName": self.app_name,
-            "version": self.version,
-            "protocolVersion": self.protocol_version,
-            "authToken": self._token or "",
-            "tools": [
-                {
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": t.input_schema,
-                    "requiresConfirmation": t.requires_confirmation,
-                    "timeoutSeconds": t.timeout_seconds,
-                    "confirmTimeoutSeconds": t.confirm_timeout_seconds,
-                }
-                for t in self._tools.values()
-            ],
-        }
-        if self._launch_info is not None:
-            payload["launch"] = self._launch_info.to_payload()
+        payload = self._register_payload()
         await self._send(ws, _MSG_REGISTER, payload)
 
         try:
@@ -352,6 +468,31 @@ class AgentQuayClient:
                 raise AuthFailedError(f"认证失败: {message}")
             raise RegistrationError(f"注册被拒绝 [{code}]: {message}")
         raise ProtocolError(f"注册等待期间收到意外消息: {env['type']}")
+
+    def _register_payload(self) -> dict[str, Any]:
+        """组装注册消息 payload（含可选 pageKey，页面智能路由 §6.1）。"""
+        payload = {
+            "appId": self.app_id,
+            "appName": self.app_name,
+            "version": self.version,
+            "protocolVersion": self.protocol_version,
+            "authToken": self._token or "",
+            "tools": [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "inputSchema": t.input_schema,
+                    "requiresConfirmation": t.requires_confirmation,
+                    "timeoutSeconds": t.timeout_seconds,
+                    "confirmTimeoutSeconds": t.confirm_timeout_seconds,
+                    **({"pageKey": t.page_key} if t.page_key else {}),
+                }
+                for t in self._tools.values()
+            ],
+        }
+        if self._launch_info is not None:
+            payload["launch"] = self._launch_info.to_payload()
+        return payload
 
     async def _recv_loop(self, ws: websockets.ClientConnection) -> None:
         while not self._stop_event.is_set():
@@ -426,6 +567,15 @@ class AgentQuayClient:
         try:
             result = await self._call(binding, arguments, timeout_seconds)
             await self._send_result(ws, request_id, True, result, None)
+        except PageActivationTimeoutError as exc:
+            await self._send_result(ws, request_id, False, None,
+                                    {"code": "PAGE_ACTIVATION_TIMEOUT", "message": str(exc)})
+        except PageNotFoundError as exc:
+            await self._send_result(ws, request_id, False, None,
+                                    {"code": "PAGE_NOT_FOUND", "message": str(exc)})
+        except PageActivationError as exc:
+            await self._send_result(ws, request_id, False, None,
+                                    {"code": "PAGE_ACTIVATION_FAILED", "message": str(exc)})
         except asyncio.TimeoutError:
             await self._send_result(ws, request_id, False, None,
                                     {"code": "EXECUTION_TIMEOUT", "message": f"执行超时（>{timeout_seconds}s）"})
@@ -435,11 +585,73 @@ class AgentQuayClient:
                                     {"code": "EXECUTION_ERROR", "message": str(exc)})
 
     async def _call(self, binding: ToolBinding, arguments: dict[str, Any], timeout_seconds: int) -> Any:
-        kwargs = _bind_arguments(binding.func, arguments)
+        """调用分发核心（页面智能路由 §4.2）：实例存活直接调；无实例有工厂则单飞创建；
+        无实例无工厂抛 PageNotFoundError（工具仍在表内，Agent 收到明确错误）。"""
+        target = binding.instance or (binding.live() if binding.live else None)
+        if target is None and binding.factory is not None:
+            target = await self._get_or_create(binding)
+        if target is None:
+            raise PageNotFoundError(f"页面 '{binding.page_key}' 未打开且无工厂，无法调用")
+
+        if binding.instance is not None:
+            func = binding.func  # 立即绑定：直接调用
+        else:
+            func = getattr(target, binding.member_name)  # 惰性：按名取方法（自动绑定）
+
+        kwargs = _bind_arguments(func, arguments)
         # 超时上限 = Bridge 侧执行超时 + 5s 余量（保证 Bridge 先超时，SDK 迟到结果进孤儿处理）
         if binding.is_async:
-            return await asyncio.wait_for(binding.func(**kwargs), timeout=timeout_seconds + 5)
-        return await asyncio.wait_for(asyncio.to_thread(binding.func, **kwargs), timeout=timeout_seconds + 5)
+            return await asyncio.wait_for(func(**kwargs), timeout=timeout_seconds + 5)
+        return await asyncio.wait_for(asyncio.to_thread(func, **kwargs), timeout=timeout_seconds + 5)
+
+    async def _get_or_create(self, binding: ToolBinding) -> Any:
+        """单飞：并发调用合并等待同一个创建任务，不会建出两个页面；
+        任务完成（成功或失败）后回 NotLoaded，下次调用重建。"""
+        key = binding.page_key or binding.name
+        task = self._inflight.get(key)
+        if task is None or task.done():
+            task = asyncio.ensure_future(self._activate(binding, key))
+            self._inflight[key] = task
+        try:
+            # shield：超时只中断本调用方，不取消创建任务——页面可能已开始创建，
+            # 与"页面已导航但调用超时"的孤儿机制一致
+            return await asyncio.wait_for(
+                asyncio.shield(task), timeout=self.page_activation_timeout
+            )
+        except asyncio.TimeoutError:
+            # 仅当槽位仍是本任务时让出（并发各方各自超时，后发调用可重建）
+            if self._inflight.get(key) is task:
+                del self._inflight[key]
+            raise PageActivationTimeoutError(
+                f"页面激活超时（>{self.page_activation_timeout}s，page_key={key}）") from None
+
+    async def _activate(self, binding: ToolBinding, key: str) -> Any:
+        """激活：工厂创建 → 可选导航 → 等待就绪。运行在事件循环线程（GUI 框架经
+        qasync 等集成时即 UI 线程），全程 await 让出。成功后先设置弱引用再返回。
+        工厂/导航/就绪任一抛异常 → PageActivationError（PAGE_ACTIVATION_FAILED）。"""
+        try:
+            instance = binding.factory()
+            if instance is None:
+                raise PageActivationError(f"页面工厂返回 None（page_key={binding.page_key}）")
+            navigate, await_ready = self._activators.get(binding.page_key or "", (None, None))
+            if navigate is not None:
+                res = navigate(instance)
+                if asyncio.iscoroutine(res):
+                    await res
+            if await_ready is not None:
+                await await_ready(instance)  # 必须异步等待（如 Loaded 事件），禁止阻塞
+        except PageActivationError:
+            raise
+        except Exception as exc:
+            raise PageActivationError(
+                f"页面激活失败（page_key={binding.page_key}）: {exc}"
+            ) from exc
+        try:
+            binding.live = weakref.ref(instance)
+        except TypeError:
+            # 不可弱引用的对象（如 __slots__ 无 __weakref__）：保持强绑定（原行为）
+            binding.instance = instance
+        return instance
 
     async def _handle_confirm(self, ws: websockets.ClientConnection, payload: dict[str, Any]) -> None:
         request_id = payload.get("requestId", "")

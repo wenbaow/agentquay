@@ -77,3 +77,25 @@ public class ToolCallException : AgentQuayException
         Details = details;
     }
 }
+
+/// <summary>页面未打开且无惰性工厂，无法调用（工具仍在表内，Agent 收到 PAGE_NOT_FOUND）。</summary>
+public class PageNotFoundException : AgentQuayException
+{
+    public PageNotFoundException(string message) : base(message) { }
+
+    public PageNotFoundException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>页面激活失败：工厂抛异常 / 导航失败 / 就绪等待失败（Agent 收到 PAGE_ACTIVATION_FAILED）。</summary>
+public class PageActivationException : AgentQuayException
+{
+    public PageActivationException(string message) : base(message) { }
+
+    public PageActivationException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>页面激活超时（默认 15s，创建/导航/等待整体计时；Agent 收到 PAGE_ACTIVATION_TIMEOUT）。</summary>
+public class PageActivationTimeoutException : PageActivationException
+{
+    public PageActivationTimeoutException(string message) : base(message) { }
+}

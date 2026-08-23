@@ -26,6 +26,9 @@ import {
   BridgeUnavailableError,
   ConfirmationError,
   InvokeTimeoutError,
+  PageActivationError,
+  PageActivationTimeoutError,
+  PageNotFoundError,
   ProtocolError,
   RegistrationError,
   ReplacedError,
@@ -70,12 +73,29 @@ export interface ToolBinding {
   requiresConfirmation: boolean;
   timeoutSeconds: number;
   confirmTimeoutSeconds: number;
-  /** 已绑定实例的方法（调用入口）。 */
+  /** 已绑定实例的方法（立即注册的调用入口）。 */
   method: (...args: unknown[]) => unknown;
-  /** 未绑定的原始方法（参数源码解析 / schema 生成用，避免 bound 函数 toString 失效）。 */
+  /** 未绑定的原始方法（参数源码解析 / schema 生成用，避免 bound 函数 toString 失效；
+   *  惰性注册时经 apply(target) 调用）。 */
   rawMethod: (...args: unknown[]) => unknown;
   paramNames: ParamInfo[] | null;
   isAsync: boolean;
+  /** 页面分组标签（页面智能路由：仅 SDK 内部路由用，不进协议）。 */
+  pageKey?: string;
+  /** 立即绑定实例（已开页面；惰性注册为 null）。 */
+  instance?: object | null;
+  /** 惰性工厂（页面未打开时首次调用创建）。 */
+  factory?: () => object;
+  /** 惰性激活后的弱引用实例。 */
+  live?: WeakRef<object> | null;
+}
+
+/** 页面激活钩子（页面智能路由 §3.2）。 */
+export interface PageActivator {
+  /** 自定义导航（接收创建好的实例；UI 主线程执行）。 */
+  navigate?: (page: object) => void;
+  /** 自定义就绪等待（如 loaded 事件，必须异步等待，禁止阻塞）。 */
+  awaitReady?: (page: object) => Promise<void> | void;
 }
 
 /** 确认回调：返回 true=确认 / false=取消（支持同步与异步）。 */
@@ -131,6 +151,12 @@ export interface AgentQuayClientOptions {
 export interface RegisterToolsOptions {
   /** 可选增强：tool 名 → zod schema（运行时转换为 inputSchema 供 Bridge 校验）。 */
   zodSchemas?: Record<string, unknown>;
+  /** 页面分组标签（页面智能路由）：传入即惰性注册——页面未打开工具也可见，
+   *  首次调用才创建实例；pageKey 只是 SDK 内部的分组标签，不进协议、Agent 无感知。 */
+  pageKey?: string;
+  /** 惰性注册的显式工厂（DI 场景；缺省 new ctor()，需无参构造）。
+   *  仅与 pageKey 同时使用时生效。 */
+  factory?: () => object;
 }
 
 // appId 规范（与 Bridge 一致）：[a-z0-9-]{1,48}
@@ -180,6 +206,12 @@ export class AgentQuayClient {
   private readonly log: Logger;
 
   private readonly tools = new Map<string, ToolBinding>();
+  /** 页面路由（页面智能路由 §4.2）：pageKey → 创建中的任务（单飞去重）。 */
+  private readonly inflight = new Map<string, { promise: Promise<object>; settled: boolean }>();
+  /** pageKey → 激活钩子（导航 / 就绪等待）。 */
+  private readonly activators = new Map<string, PageActivator>();
+  /** 页面激活超时秒数（创建/导航/等待整体计时，默认 15s）。 */
+  pageActivationTimeoutSeconds = 15;
   private readonly tokenStore: TokenStore;
   private token: string | null;
 
@@ -228,8 +260,13 @@ export class AgentQuayClient {
   /**
    * 扫描被 @AgentTool 标记的方法并登记。
    *
-   * @param target 控制器实例或类（类会自动实例化，无参构造）
-   * @param opts zodSchemas: 可选增强，tool 名 → zod schema
+   * - 传控制器**实例**：立即绑定（原行为）
+   * - 传控制器**类**：立即实例化（无参构造）；全部为静态方法时无需实例
+   * - 传控制器类 + `opts.pageKey`：**惰性注册**（页面智能路由）——页面未打开工具也可见，
+   *   首次调用才创建实例；可用 `opts.factory` 提供显式工厂（DI 场景）
+   *
+   * @param target 控制器实例或类
+   * @param opts zodSchemas: 可选增强，tool 名 → zod schema；pageKey/factory: 惰性注册
    * @returns this（支持链式调用）
    */
   registerTools(target: object | Function, opts: RegisterToolsOptions = {}): this {
@@ -246,8 +283,9 @@ export class AgentQuayClient {
     if (!specs || specs.length === 0) {
       return this;
     }
-    // 类输入：尝试实例化（无参构造）；全部为静态方法时无需实例
-    if (instance === null) {
+    const lazy = !!opts.pageKey;
+    // 类输入 + 立即注册：尝试实例化（无参构造）；全部为静态方法时无需实例
+    if (!lazy && instance === null) {
       try {
         instance = new (ctor as new () => object)();
       } catch (e) {
@@ -258,8 +296,51 @@ export class AgentQuayClient {
       }
     }
     for (const spec of specs) {
-      this.registerSpec(spec, instance, ctor, opts);
+      this.registerSpec(spec, instance, ctor, opts, lazy);
     }
+    return this;
+  }
+
+  /**
+   * 惰性注册（显式工厂，DI 场景，页面智能路由）：首次调用才执行工厂创建实例。
+   * 与 C# `RegisterTools(Func<object>, pageKey)` / Python `register_tools_factory` 同构。
+   */
+  registerToolsFactory(
+    ctor: Function,
+    factory: () => object,
+    pageKey: string,
+    opts: RegisterToolsOptions = {},
+  ): this {
+    if (typeof factory !== "function") {
+      throw new TypeError("factory 必须是函数");
+    }
+    if (!pageKey) {
+      throw new Error("pageKey 不能为空");
+    }
+    return this.registerTools(ctor, { ...opts, pageKey, factory });
+  }
+
+  /**
+   * 注册 pageKey 的激活钩子（页面智能路由 §3.2）：首次惰性创建后执行一次。
+   * navigate 在 UI 主线程执行；awaitReady 必须异步等待（如 loaded 事件），禁止阻塞。
+   */
+  setPageActivator(pageKey: string, activator: PageActivator): this {
+    if (!pageKey) {
+      throw new Error("pageKey 不能为空");
+    }
+    this.activators.set(pageKey, activator);
+    return this;
+  }
+
+  /** 页面关闭时显式注销：清除弱引用与激活钩子，工厂路径下次调用自动重建。
+   *  不调也行——弱引用 GC 后自动失效（JS 的 WeakRef 由引擎回收）。 */
+  unregisterPage(pageKey: string): this {
+    for (const binding of this.tools.values()) {
+      if (binding.pageKey === pageKey) {
+        binding.live = null;
+      }
+    }
+    this.activators.delete(pageKey);
     return this;
   }
 
@@ -268,19 +349,29 @@ export class AgentQuayClient {
     instance: object | null,
     ctor: Function,
     opts: RegisterToolsOptions,
+    lazy: boolean,
   ): void {
     if (this.tools.has(spec.name)) {
-      throw new Error(`tool 名重复: ${spec.name}`);
+      // 同一 appId 内工具名跨页面全局唯一（页面智能路由 §2.2）
+      throw new Error(`tool 名重复（跨页面也须全局唯一）: ${spec.name}`);
     }
     if (!TOOL_NAME_PATTERN.test(spec.name)) {
       throw new Error(`tool 名 ${spec.name} 不符合规范 [a-zA-Z0-9_-]{1,78}`);
     }
-    const holder = (instance ?? ctor) as unknown as Record<string, unknown>;
-    const fn = holder[spec.method];
+    // 实例方法挂 prototype、静态方法挂类本身：惰性注册（无实例）时两处都要找
+    let fn: unknown;
+    if (instance) {
+      fn = (instance as unknown as Record<string, unknown>)[spec.method];
+    } else {
+      const proto = (ctor as { prototype?: unknown }).prototype as Record<string, unknown> | undefined;
+      fn = proto?.[spec.method] ?? (ctor as unknown as Record<string, unknown>)[spec.method];
+    }
     if (typeof fn !== "function") {
       throw new Error(`${spec.method} 被标记为 AgentTool 但不可调用`);
     }
-    const method = instance ? (fn as (...args: unknown[]) => unknown).bind(instance) : (fn as (...args: unknown[]) => unknown);
+    const method = lazy
+      ? (fn as (...args: unknown[]) => unknown)
+      : (fn as (...args: unknown[]) => unknown).bind(instance);
     this.tools.set(spec.name, {
       name: spec.name,
       description: spec.description,
@@ -292,6 +383,10 @@ export class AgentQuayClient {
       rawMethod: fn as (...args: unknown[]) => unknown,
       paramNames: parseParams(fn),
       isAsync: fn.constructor?.name === "AsyncFunction",
+      pageKey: lazy ? opts.pageKey : undefined,
+      instance: lazy ? null : instance,
+      factory: lazy ? (opts.factory ?? (() => new (ctor as new () => object)())) : undefined,
+      live: null,
     });
     this.log.debug(`已登记 tool: ${spec.name}`);
   }
@@ -619,14 +714,20 @@ export class AgentQuayClient {
   }
 
   private buildRegisterMessage(): string {
-    const toolsMeta: ToolMetadata[] = [...this.tools.values()].map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.resolvedSchema ?? {},
-      requiresConfirmation: t.requiresConfirmation,
-      timeoutSeconds: t.timeoutSeconds,
-      confirmTimeoutSeconds: t.confirmTimeoutSeconds,
-    }));
+    const toolsMeta: ToolMetadata[] = [...this.tools.values()].map((t) => {
+      const meta: ToolMetadata = {
+        name: t.name,
+        description: t.description,
+        inputSchema: t.resolvedSchema ?? {},
+        requiresConfirmation: t.requiresConfirmation,
+        timeoutSeconds: t.timeoutSeconds,
+        confirmTimeoutSeconds: t.confirmTimeoutSeconds,
+      };
+      if (t.pageKey) {
+        meta.pageKey = t.pageKey; // 可选分组标签（页面智能路由，旧 SDK 不传即空）
+      }
+      return meta;
+    });
     const payload: RegisterPayload = {
       appId: this.appId,
       appName: this.appName,
@@ -659,11 +760,26 @@ export class AgentQuayClient {
     this.log.debug(`执行 tool: ${toolName} args=${JSON.stringify(arguments_)}`);
     // 触发工具调用钩子（在业务方法执行前）
     this.onToolCall?.(toolName, arguments_);
-    try {
+try {
       const result = await this.call(binding, arguments_, timeoutSeconds);
       await this.sendResult(ws, requestId, true, result, null);
     } catch (e) {
-      if (e instanceof InvokeTimeoutError) {
+      if (e instanceof PageActivationTimeoutError) {
+        await this.sendResult(ws, requestId, false, null, {
+          code: "PAGE_ACTIVATION_TIMEOUT",
+          message: rootMessage(e),
+        });
+      } else if (e instanceof PageNotFoundError) {
+        await this.sendResult(ws, requestId, false, null, {
+          code: "PAGE_NOT_FOUND",
+          message: rootMessage(e),
+        });
+      } else if (e instanceof PageActivationError) {
+        await this.sendResult(ws, requestId, false, null, {
+          code: "PAGE_ACTIVATION_FAILED",
+          message: rootMessage(e),
+        });
+      } else if (e instanceof InvokeTimeoutError) {
         await this.sendResult(ws, requestId, false, null, {
           code: "EXECUTION_TIMEOUT",
           message: `执行超时（>${timeoutSeconds}s）`,
@@ -678,18 +794,93 @@ export class AgentQuayClient {
     }
   }
 
+  /**
+   * 调用分发核心（页面智能路由 §4.2）：实例存活直接调；无实例有工厂则单飞创建
+   * （带激活超时）；无实例无工厂抛 PageNotFoundError（工具仍在表内，Agent 收到明确错误）。
+   */
   private async call(
     binding: ToolBinding,
     arguments_: Record<string, unknown>,
     timeoutSeconds: number,
   ): Promise<unknown> {
+    let target: object | null = binding.instance ?? binding.live?.deref() ?? null;
+    if (target === null && binding.factory) {
+      target = await this.getOrCreate(binding);
+    }
+    if (target === null) {
+      throw new PageNotFoundError(
+        `页面 '${binding.pageKey ?? ""}' 未打开且无工厂，无法调用`,
+      );
+    }
+    // 惰性注册：rawMethod.bind(实例) 完成绑定（实例方法/静态方法均正确）
+    const method = binding.instance
+      ? binding.method
+      : (binding.rawMethod as (...args: unknown[]) => unknown).bind(target);
     const bound = bindArguments(binding, arguments_);
-    const result = binding.method(...bound);
-    // 超时上限 = Bridge 侧执行超时 + 5s 余量（保证 Bridge 先超时，迟到结果进孤儿处理）
+    const result = method(...bound);
+    // 超时上限 = Bridge 侧执行超时 + 5s 余量（保证 Bridge 先超时，迟到结果进孤儿缓冲）
     const timeoutMs = (timeoutSeconds + 5) * 1000;
     return withTimeout(Promise.resolve(result), timeoutMs, () => {
       return new InvokeTimeoutError(`执行超时（>${timeoutSeconds + 5}s）`);
     });
+  }
+
+  /** 单飞：并发调用合并等待同一个创建任务，不会建出两个页面；
+   *  任务完成（成功或失败）后回 NotLoaded，下次调用重建。 */
+  private getOrCreate(binding: ToolBinding): Promise<object> {
+    const key = binding.pageKey ?? binding.name;
+    let entry = this.inflight.get(key);
+    if (!entry || entry.settled) {
+      const promise = this.activate(binding, key);
+      entry = { promise, settled: false };
+      promise.then(
+        () => (entry!.settled = true),
+        () => (entry!.settled = true),
+      );
+      this.inflight.set(key, entry);
+    }
+    // 超时只中断本调用方（不取消创建任务——与"页面已导航但调用超时"的孤儿机制一致）；
+    // 超时按身份让出槽位，下次调用可重建
+    return withTimeout(entry.promise, this.pageActivationTimeoutSeconds * 1000, () => {
+      if (this.inflight.get(key) === entry) {
+        this.inflight.delete(key);
+      }
+      return new PageActivationTimeoutError(
+        `页面激活超时（>${this.pageActivationTimeoutSeconds}s，pageKey=${key}）`,
+      );
+    });
+  }
+
+  /** 激活：工厂创建 → 可选导航 → 等待就绪。成功后先设置弱引用再返回。
+   *  工厂/导航/就绪任一抛异常 → PageActivationError（PAGE_ACTIVATION_FAILED）。 */
+  private activate(binding: ToolBinding, _key: string): Promise<object> {
+    return (async () => {
+      let instance: object;
+      try {
+        instance = binding.factory!();
+        if (!instance) {
+          throw new PageActivationError(
+            `页面工厂返回 null（pageKey=${binding.pageKey ?? ""}）`,
+          );
+        }
+        const act = this.activators.get(binding.pageKey ?? "");
+        if (act?.navigate) {
+          act.navigate(instance);
+        }
+        if (act?.awaitReady) {
+          await act.awaitReady(instance); // 必须异步等待（如 loaded 事件），禁止阻塞
+        }
+      } catch (e) {
+        if (e instanceof PageActivationError) {
+          throw e;
+        }
+        throw new PageActivationError(
+          `页面激活失败（pageKey=${binding.pageKey ?? ""}）: ${rootMessage(e)}`,
+        );
+      }
+      binding.live = new WeakRef(instance);
+      return instance;
+    })();
   }
 
   // ------------------------------------------------------------------

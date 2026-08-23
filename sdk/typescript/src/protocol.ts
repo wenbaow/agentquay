@@ -44,6 +44,8 @@ export interface ToolMetadata {
   requiresConfirmation: boolean;
   timeoutSeconds: number;
   confirmTimeoutSeconds: number;
+  /** 页面分组标签（页面智能路由，V1 可选字段，旧 SDK 不传即空）。 */
+  pageKey?: string;
 }
 
 /** 业务错误信息（应用返回，Bridge 透传）。 */

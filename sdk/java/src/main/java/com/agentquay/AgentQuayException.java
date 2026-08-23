@@ -100,4 +100,33 @@ public class AgentQuayException extends RuntimeException {
             return details;
         }
     }
+
+    /** 页面未打开且无惰性工厂，无法调用（工具仍在表内，Agent 收到 PAGE_NOT_FOUND）。 */
+    public static class PageNotFoundException extends AgentQuayException {
+        public PageNotFoundException(String message) {
+            super(message);
+        }
+
+        public PageNotFoundException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /** 页面激活失败：工厂抛异常 / 导航失败 / 就绪等待失败（PAGE_ACTIVATION_FAILED）。 */
+    public static class PageActivationException extends AgentQuayException {
+        public PageActivationException(String message) {
+            super(message);
+        }
+
+        public PageActivationException(String message, Throwable cause) {
+            super(message, cause);
+        }
+    }
+
+    /** 页面激活超时（默认 15s，创建/导航/等待整体计时；PAGE_ACTIVATION_TIMEOUT）。 */
+    public static class PageActivationTimeoutException extends PageActivationException {
+        public PageActivationTimeoutException(String message) {
+            super(message);
+        }
+    }
 }

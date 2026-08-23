@@ -130,7 +130,7 @@ func (b *Bridge) RebuildTools() {
 			tools = append(tools, server.ServerTool{
 				Tool: mcp.Tool{
 					Name:           registry.JoinToolName(app.AppID, t.Name),
-					Description:    fmt.Sprintf("[%s] %s", app.AppName, t.Description),
+					Description:    describeTool(app.AppName, t),
 					RawInputSchema: mustJSON(t.InputSchema),
 				},
 				Handler: b.dispatch,
@@ -150,7 +150,7 @@ func (b *Bridge) RebuildTools() {
 			tools = append(tools, server.ServerTool{
 				Tool: mcp.Tool{
 					Name:           registry.JoinToolName(app.AppID, t.Name),
-					Description:    fmt.Sprintf("%s[%s] %s", offlineAnnotation, app.AppName, t.Description),
+					Description:    fmt.Sprintf("%s%s", offlineAnnotation, describeTool(app.AppName, t)),
 					RawInputSchema: mustJSON(t.InputSchema),
 				},
 				Handler: b.dispatch,
@@ -218,6 +218,16 @@ func mustJSON(v any) json.RawMessage {
 	return data
 }
 
+// describeTool 组装 tools/list 中的工具描述。
+// 无 pageKey：  [AppName] 描述
+// 有 pageKey：  [AppName|PageKey] 描述 —— Agent 由此可知工具归属页面，工具名与调用方式不变。
+func describeTool(appName string, t types.ToolMetadata) string {
+	if t.PageKey == "" {
+		return fmt.Sprintf("[%s] %s", appName, t.Description)
+	}
+	return fmt.Sprintf("[%s|%s] %s", appName, t.PageKey, t.Description)
+}
+
 // dispatch 是所有应用工具的共用处理器：解析合成名 → 校验 → 自动拉起（离线时）→ 确认流程 → 转发 → 回传。
 func (b *Bridge) dispatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// 1. 解析 {appId}_{toolName}
@@ -265,9 +275,14 @@ func (b *Bridge) dispatch(ctx context.Context, req mcp.CallToolRequest) (*mcp.Ca
 	if tool.RequiresConfirmation {
 		b.logger.Debug("进入确认流程", "tool", registry.JoinToolName(appID, toolName), "requestId", requestID)
 		pending.SetPhase(PhaseConfirm)
+		// 页面工具（pageKey 非空）注明确认后将在应用中打开/创建对应页面，用户可拒绝而不触发任何页面动作
+		confirmMessage := "确认执行 " + toolName + "？"
+		if tool.PageKey != "" {
+			confirmMessage = fmt.Sprintf("确认执行 %s？（将在应用中打开页面 %s）", toolName, tool.PageKey)
+		}
 		if err := b.hub.SendConfirm(app, &protocol.ConfirmPayload{
 			RequestID:      requestID,
-			Message:        "确认执行 " + toolName + "？",
+			Message:        confirmMessage,
 			Arguments:      args,
 			TimeoutSeconds: int(confirmTimeout.Seconds()),
 		}); err != nil {

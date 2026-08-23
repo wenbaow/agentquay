@@ -167,6 +167,21 @@ class E2EController:
         return {"elapsed": seconds}
 
 
+class SongPage:
+    """页面控制器（页面智能路由）：惰性注册，首次调用才创建实例。"""
+
+    creations = 0  # 实例创建计数（跨测试实例共享，用于断言"只创建一次"）
+
+    def __init__(self) -> None:
+        type(self).creations += 1
+        self.hits = 0
+
+    @agent_tool("queue", description="查看播放队列（页面工具）")
+    def queue(self) -> dict:
+        self.hits += 1
+        return {"page": type(self).creations, "hits": self.hits}
+
+
 class E2EApp:
     def __init__(self, app_id: str = "e2e-app", confirm_answer: bool = True):
         self.client = AgentQuayClient(
@@ -179,6 +194,8 @@ class E2EApp:
             on_confirm=lambda message, arguments: confirm_answer,
         )
         self.client.register_tools(E2EController())
+        # 页面工具：惰性注册（页面未打开工具也可见，首次调用才创建）
+        self.client.register_tools(SongPage, page_key="SongPage")
 
     async def run(self) -> None:
         await self.client.connect()
@@ -308,6 +325,23 @@ async def main() -> int:
         echo_tool = next(t for t in tools if t["name"] == "e2e-app_echo")
         check("描述带应用名前缀 [E2E App]", echo_tool["description"].startswith("[E2E App]"))
         check("inputSchema 含 required", echo_tool["inputSchema"].get("required") == ["message"])
+
+        # 4.5 页面智能路由端到端（方案 §9 Phase 4 验收：未开页面自动创建 + 前缀 + 实例复用）
+        page_tool = next(t for t in tools if t["name"] == "e2e-app_queue")
+        check("页面工具在 tools/list 中（页面未打开也可见）",
+              page_tool["description"] == "[E2E App|SongPage] 查看播放队列（页面工具）",
+              page_tool["description"])
+        check("页面尚未创建（工厂未执行）", SongPage.creations == 0)
+        resp = await rpc.tools_call("e2e-app_queue", {})
+        ok = "result" in resp and not resp["result"].get("isError", False)
+        check("调用未打开页面 → 自动创建并返回", ok, str(resp)[:200])
+        if ok:
+            t1 = json.loads(resp["result"]["content"][0]["text"])
+            resp = await rpc.tools_call("e2e-app_queue", {})
+            t2 = json.loads(resp["result"]["content"][0]["text"])
+            check("首次调用创建页面（page=1, hits=1）", t1 == {"page": 1, "hits": 1}, str(t1))
+            check("再次调用复用同一实例（page=1, hits=2）", t2 == {"page": 1, "hits": 2}, str(t2))
+            check("全程只创建一次实例", SongPage.creations == 1)
 
         # 5. 正常调用
         resp = await rpc.tools_call("e2e-app_echo", {"message": "你好，Agent"})

@@ -507,7 +507,46 @@ cd bridge && go build -o dist/agentquay ./cmd/agentquay   # Go 1.25.5+
 ./dist/agentquay start --daemon
 ```
 
-## 8. 仓库结构
+## 8. 页面智能路由（页面级懒激活，V0.2）
+
+**页面未打开，工具也要可见。** 页面路由方案把"工具元数据"与"页面实例"解耦：
+注册时全量上报（含可选 `pageKey` 分组标签），实例绑定惰性化——Agent 调用时：
+
+1. 页面已打开 → 直接调用该实例的方法（UI 线程，异步让出不阻塞）；
+2. 页面未打开但有工厂 → **自动创建 → 导航 → 等待就绪 → 调用**（单飞去重，默认 15s 激活超时）；
+3. 页面未打开且无工厂 → 返回明确错误（`PAGE_NOT_FOUND`，工具仍在 `tools/list` 中）。
+
+`pageKey` 只是 SDK 内部的分组标签，**不进协议、Agent 无感知**；工具名跨页面全局唯一
+（重复注册返回 `INVALID_TOOL`）；`tools/list` 描述带 `[AppName|PageKey]` 前缀便于
+Agent 了解工具归属。示例（C#，WPF 应用）：
+
+```csharp
+var client = await AgentQuayClient.ConnectAsync(appId: "music-app", appName: "Music Player",
+    autoSpawnBridge: true);
+
+// 全局工具：原路径零改动
+client.RegisterTools<AppCommands>();
+
+// 页面工具：惰性注册（页面未打开工具也可见，首次调用才创建）
+client.RegisterTools<SearchPage>(pageKey: "SearchPage");
+client.RegisterTools(() => _services.GetRequiredService<PlayerPage>(), pageKey: "PlayerPage");
+
+// 激活钩子（可选）：导航 + 等待就绪（WPF 扩展包 AgentQuay.Sdk.Wpf 提供调度器与就绪等待）
+client.SetUIThreadDispatcher(new WpfDispatcher());
+client.SetPageActivator("SearchPage",
+    navigate: page => MainWindow.NavigateTo((SearchPage)page),
+    awaitReady: async page => await PageLoadedAsync((FrameworkElement)page));
+
+await client.StartAsync();
+```
+
+各语言 API 同构：Python `register_tools(cls, page_key=...)` / `register_tools_factory`、
+TypeScript `registerTools(cls, { pageKey })` / `registerToolsFactory`、Java
+`registerTools(Class, pageKey)` / `registerToolsFactory`，均提供 `setPageActivator`
+激活钩子与 `unregisterPage` 显式注销（不调也行——弱引用 GC 失效后工厂路径自动重建）。
+详见 [`sdk-tutorial.md`](sdk-tutorial.md) 与各 SDK 单测。
+
+## 9. 仓库结构
 
 ```
 ├── README.md                # 本文件：整体架构方案、介绍、开源授权
@@ -524,25 +563,25 @@ cd bridge && go build -o dist/agentquay ./cmd/agentquay   # Go 1.25.5+
     └── rust/                # Rust SDK（crates.io 待发布）
 ```
 
-## 9. 验证
+## 10. 验证
 
 ```bash
 # Go 编译 + 静态检查
 cd bridge && go vet ./... && go build ./...
 
-# Python SDK 单测（18 项）+ 端到端联调（25 项，真实 Bridge + SDK + MCP 客户端）
+# Python SDK 单测（30 项，含页面路由 12 项）+ 端到端联调（31 项，含页面路由 6 项，真实 Bridge + SDK + MCP 客户端）
 # + 内嵌 Bridge 生命周期 e2e（3 场景：宿主退出/让位+归位/并发竞态）
 cd sdk/python && python -m unittest discover -s tests \
   && python tests/e2e_test.py \
   && python tests/lifecycle_e2e.py
 
-# TypeScript SDK 单测（17 项）+ 端到端联调（25 项）+ 冒烟
+# TypeScript SDK 单测（26 项，含页面路由 9 项）+ 端到端联调（25 项）+ 冒烟
 cd sdk/typescript && npm test && npm run test:e2e && npm run smoke
 
-# Java SDK 单测（11 项）+ 端到端联调（7 项，真实 Go Bridge）
+# Java SDK 单测（21 项，含页面路由 10 项）+ 端到端联调（7 项，真实 Go Bridge）
 cd sdk/java && mvn test
 
-# C# SDK 单测（7 项）+ 端到端联调（1 项全流程，真实 Go Bridge）
+# C# SDK 单测（16 项，含页面路由 9 项）+ 端到端联调（1 项全流程，真实 Go Bridge）
 cd sdk/dotnet && dotnet test tests/AgentQuay.Sdk.Tests
 
 # C++ SDK 单测（12 项）+ 端到端联调（9 项，真实 Go Bridge；需 Qt 6.5+ 与 Ninja）
@@ -556,7 +595,7 @@ cd sdk/rust && cargo test --workspace && cargo test -p agentquay --test e2e_test
 `-32003` 参数校验、业务错误透传、确认流程（确认/取消）、`-32004` 超时 + 孤儿缓冲、
 同 appId 替换、SSE `list_changed`、断线重连携带 token、`rotate-token` 旧 token 拒绝。
 
-## 10. 开发计划与现状
+## 11. 开发计划与现状
 
 **当前进展（V0.1）**：Bridge + Python/TypeScript/Java/.NET/C++/Rust 六种语言 SDK
 已完成并通过单元/端到端验证；应用启动注册表 + OS 发现、内嵌 Bridge 生命周期三步方案
@@ -567,6 +606,8 @@ cd sdk/rust && cargo test --workspace && cargo test -p agentquay --test e2e_test
 | Bridge + 六语言 SDK + 端到端验证 | ✅ 已实现 |
 | 应用启动注册表与 OS 级发现（V0.1 新增） | ✅ 已实现 |
 | 内嵌 Bridge 生命周期（自回收/让位/归位/竞态锁） | ✅ 已实现 |
+| 页面智能路由（页面级懒激活，V0.2 新增） | ✅ 已实现 |
+| WPF 扩展包 AgentQuay.Sdk.Wpf（UI 线程调度 + 就绪等待） | ✅ 已实现 |
 | Swift SDK（Swift Macro） | ⬜ 规划 |
 | 系统服务安装器（launchd/systemd/Windows Service 一键安装） | ⬜ 规划 |
 | 结果脱敏中间件 | ⬜ 规划 |
@@ -579,7 +620,7 @@ token 存系统凭证库（fallback 文件）；C++ 走 Qt 元对象反射；Rus
 **仍未拍板**：Swift Macro 方案、多用户 System scope、Agent 兼容矩阵的完整覆盖、
 Python Pydantic 可选增强。
 
-## 11. 开源授权
+## 12. 开源授权
 
 **Copyright (c) 2026 王文豹（Wang Wenbao）**
 

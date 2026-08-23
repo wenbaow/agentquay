@@ -49,3 +49,15 @@ class ToolCallError(AgentQuayError):
         self.code = code
         self.message = message
         self.details = details
+
+
+class PageNotFoundError(AgentQuayError):
+    """页面未打开且无惰性工厂，无法调用（工具仍在表内，Agent 收到 PAGE_NOT_FOUND）。"""
+
+
+class PageActivationError(AgentQuayError):
+    """页面激活失败：工厂抛异常 / 导航失败 / 就绪等待失败（PAGE_ACTIVATION_FAILED）。"""
+
+
+class PageActivationTimeoutError(PageActivationError):
+    """页面激活超时（默认 15s，创建/导航/等待整体计时；PAGE_ACTIVATION_TIMEOUT）。"""

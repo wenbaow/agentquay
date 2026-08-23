@@ -236,7 +236,8 @@ func (h *Hub) processRegister(conn *websocket.Conn, raw json.RawMessage) *regist
 		return nil
 	}
 
-	// 3. tools 校验（名称规范 + 去重）
+	// 3. tools 校验（名称规范 + 去重）。去重按 appId 内全局进行：带上 pageKey 的
+	//    页面工具名同样必须唯一（页面智能路由：工具名跨页面全局唯一，不随页面开合变化）。
 	seen := make(map[string]bool, len(p.Tools))
 	for _, t := range p.Tools {
 		if !registry.ToolNamePattern.MatchString(t.Name) {
@@ -246,7 +247,7 @@ func (h *Hub) processRegister(conn *websocket.Conn, raw json.RawMessage) *regist
 		}
 		if seen[t.Name] {
 			h.failRegister(conn, protocol.CodeInvalidTool,
-				fmt.Sprintf("tool 名重复: %s", t.Name))
+				fmt.Sprintf("tool 名重复（同一 appId 内跨页面也须全局唯一）: %s", t.Name))
 			return nil
 		}
 		seen[t.Name] = true

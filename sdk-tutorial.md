@@ -83,12 +83,12 @@
 
 | 语言 | 包名 | 版本 | 环境要求 | 实现位置 |
 |------|------|------|----------|----------|
-| Python | `agentquay-sdk`（PyPI） | 0.1.1 | Python ≥ 3.10 | `sdk/python` |
-| TypeScript | `@agentquay/sdk`（npm） | 0.1.1 | Node ≥ 18 | `sdk/typescript` |
-| Java | `com.agentquay:agentquay-sdk`（Maven） | 0.1.1 | Java 11+，编译器需 `-parameters` | `sdk/java` |
-| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.1.1 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
-| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.1.1 | Qt 6.5+，C++17 | `sdk/cpp` |
-| Rust | `agentquay`（crates.io 待发布，当前源码） | 0.1.1 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
+| Python | `agentquay-sdk`（PyPI） | 0.2.0 | Python ≥ 3.10 | `sdk/python` |
+| TypeScript | `@agentquay/sdk`（npm） | 0.2.0 | Node ≥ 18 | `sdk/typescript` |
+| Java | `com.agentquay:agentquay-sdk`（Maven） | 0.2.0 | Java 11+，编译器需 `-parameters` | `sdk/java` |
+| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.2.0 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
+| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.2.0 | Qt 6.5+，C++17 | `sdk/cpp` |
+| Rust | `agentquay`（crates.io 待发布，当前源码） | 0.2.0 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
 | Swift | 设计稿 §4.5（Swift Macro） | — | 尚未实现 | — |
 
 > 各 SDK 一致性：`name` 缺省回退到方法名；`description` 缺省回退到
@@ -290,7 +290,7 @@ await client.close();
 <dependency>
   <groupId>com.agentquay</groupId>
   <artifactId>agentquay-sdk</artifactId>
-  <version>0.1.1</version>
+  <version>0.2.0</version>
 </dependency>
 ```
 
@@ -710,7 +710,49 @@ client.on_tool_call = on_tool_called
 
 > 钩子执行异常不影响业务方法：SDK 会捕获并记录警告，继续执行原流程。
 
-### 6.8 内置工具 app_*
+### 6.9 页面智能路由（页面级懒激活）
+
+> 设计文档：《页面智能路由方案》。适用于**多页桌面应用**：页面未打开时，该页面的
+> 工具也可以被 Agent 发现并调用——SDK 自动创建页面 → 导航 → 等待就绪 → 执行方法。
+
+核心行为（`pageKey` 只是 SDK 内部的分组标签，不进协议、Agent 无感知）：
+
+| 场景 | SDK 行为 |
+|------|---------|
+| 页面已打开 | 直接调用该实例（UI 线程，异步让出不阻塞） |
+| 页面未打开但有工厂 | 单飞去创建 → 导航 → 等就绪 → 调用（默认 15s 激活超时，失败可重建） |
+| 页面未打开且无工厂 | 返回 `PAGE_NOT_FOUND`（工具仍在 `tools/list` 中） |
+| 调用期间页面被关闭 | 弱引用失效 → 有工厂则重建，无则明确错误 |
+
+```python
+# Python：惰性注册 + 激活钩子
+client.register_tools(SearchPage, page_key="SearchPage")        # 类型级惰性注册
+client.register_tools_factory(lambda: di.get(PlayerPage),       # 显式工厂（DI）
+                              "PlayerPage")                     #   需标注返回类型
+client.set_page_activator("SearchPage",
+    navigate=lambda page: main_window.navigate_to(page),        # 导航（可协程）
+    await_ready=lambda page: wait_loaded(page))                 # 就绪等待（必须异步）
+```
+
+```csharp
+// C#（WPF）：UI 线程调度由扩展包 AgentQuay.Sdk.Wpf 提供
+client.RegisterTools<SearchPage>(pageKey: "SearchPage");
+client.SetUIThreadDispatcher(new WpfDispatcher());
+client.SetPageActivator("SearchPage",
+    navigate: page => MainWindow.NavigateTo((SearchPage)page),
+    awaitReady: async page => await PageLoadedAsync((FrameworkElement)page));
+```
+
+TypeScript / Java 同构：`registerTools(cls, { pageKey })` /
+`registerToolsFactory(factory, pageKey)`、`registerTools(Class, pageKey)` /
+`registerToolsFactory(Class, factory, pageKey)`；激活钩子 `setPageActivator` /
+`setPageActivator(pageKey, navigate, awaitReady)`；显式注销 `unregister_page` /
+`unregisterPage`（不调也行，弱引用 GC 失效后工厂路径自动重建）。
+
+**注意**：同一 appId 内工具名跨页面全局唯一；`tools/list` 描述带
+`[AppName|PageKey]` 前缀；危险工具请求确认时，确认文案会注明"将在应用中打开页面"。
+
+### 6.10 内置工具 app_*
 |------|------|
 | `app_list` | 查询应用注册表（在线/离线/可启动） |
 | `app_launch` | 按名启动应用 |

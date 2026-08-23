@@ -18,7 +18,14 @@ var client = await AgentQuayClient.ConnectAsync(
     autoSpawnBridge: true);   // 未检测到服务时自动拉起内嵌 Bridge
 
 client.RegisterTools(new MusicController());
+
+// 页面工具：惰性注册（页面智能路由 §3.2）。页面"未打开"工具也可见——
+// 首次调用才创建实例（pageKey 只是 SDK 内部的分组标签，不进协议）。
+// 图形应用可再配 SetUIThreadDispatcher + SetPageActivator（导航 + 等待就绪，见 WPF 扩展包）。
+client.RegisterTools<PlayerPage>(pageKey: "PlayerPage");
+
 Console.WriteLine("已注册 tools: " + string.Join(", ", client.ListTools()));
+Console.WriteLine("工具描述带页面归属（tools/list 中 [Music Player|PlayerPage] 前缀）。");
 Console.WriteLine("等待 Agent 调用…（Ctrl+C 退出）");
 await client.StartAsync(); // 保持连接，监听调用；被同 appId 新实例替换时抛 ReplacedException
 
@@ -73,5 +80,27 @@ public sealed class MusicController
     {
         await Task.Yield();
         return new Dictionary<string, string> { ["received"] = message };
+    }
+}
+/// <summary>
+/// 页面控制器（惰性注册演示）：页面每次首次调用时经无参构造创建。
+/// 真实 WPF/WinUI 应用中此类通常是 Page 子类，配合 SetPageActivator 完成导航与就绪等待。
+/// </summary>
+public sealed class PlayerPage
+{
+    private readonly List<string> _history = new();
+
+    [AgentTool("queue", Description = "查看播放队列（PlayerPage 页面工具）")]
+    public List<string> Queue()
+    {
+        _history.Add("queue");
+        return _history;
+    }
+
+    [AgentTool("enqueue", Description = "加入播放队列（PlayerPage 页面工具）")]
+    public int Enqueue(string songId)
+    {
+        _history.Add(songId);
+        return _history.Count;
     }
 }

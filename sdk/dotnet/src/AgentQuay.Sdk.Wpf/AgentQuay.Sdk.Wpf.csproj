@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- WPF 扩展包：UI 线程调度 + 页面就绪等待（页面智能路由 §5.3）。
+         核心包 AgentQuay.Sdk 不引用任何 UI 框架，本包提供 WPF 实现。 -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>AgentQuay</RootNamespace>
+    <AssemblyName>AgentQuay.Sdk.Wpf</AssemblyName>
+
+    <!-- NuGet 包元数据 -->
+    <PackageId>AgentQuay.Sdk.Wpf</PackageId>
+    <Version>0.2.0</Version>
+    <Authors>AgentQuay</Authors>
+    <Description>AgentQuay.Sdk 的 WPF 扩展：页面智能路由的 UI 线程调度器与页面就绪等待（页面智能路由 §5.3）。</Description>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageTags>mcp;agent;agentquay;bridge;desktop;wpf</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentQuay.Sdk\AgentQuay.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>

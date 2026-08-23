@@ -4,6 +4,40 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-23
+
+### Added
+
+- **页面智能路由**（页面智能路由方案）：页面工具注册时全量可见、实例绑定惰性化——
+  页面未打开时工具始终在 `tools/list` 中，Agent 调用时：实例存活直接调（UI 线程、
+  异步让出不阻塞）；无实例有工厂则单飞去创建（导航 + 等待就绪 + 15s 激活超时）；
+  无实例无工厂返回明确错误（`PAGE_NOT_FOUND`）。页面创建/导航并发单飞、弱引用
+  GC 后可重建、跨页面工具名全局唯一。
+  - **C#（Phase 1）**：`RegisterTools<T>(pageKey)` / `RegisterTools(Func<object>, pageKey)`
+    惰性注册、`SetPageActivator`（导航 + 异步就绪等待）、`UnregisterPage`、
+    `SetUIThreadDispatcher`（核心包只定义接口）、`PageActivationTimeoutSeconds`；
+    错误码 `PAGE_NOT_FOUND` / `PAGE_ACTIVATION_FAILED` / `PAGE_ACTIVATION_TIMEOUT`。
+  - **WPF 扩展包 `AgentQuay.Sdk.Wpf`（Phase 2）**：`WpfDispatcher`（BeginInvoke + TCS，
+    UI 线程执行且 async 让出，动画不冻结）+ `PageLoadedAsync` 事件驱动就绪等待。
+  - **Python / TypeScript / Java SDK（Phase 6）** 同构跟进：类型级惰性注册
+    （`register_tools(cls, page_key)` / `registerTools(cls, { pageKey })` /
+    `registerTools(Class, pageKey)`）、工厂注册、`set_page_activator` /
+    `setPageActivator` 激活钩子、单飞路由、`unregister_page` / `unregisterPage`、
+    显式注销后工厂路径自动重建。
+  - **Bridge（Phase 3）**：`ToolMetadata` 新增可选字段 `pageKey`（协议版本不升、
+    旧 SDK 完全兼容，注册消息零破坏）；`tools/list` 描述前缀 `[AppName|PageKey]`
+    （离线变体 `[未运行] [AppName|PageKey]`）；危险工具确认消息注明"将在应用中打开
+    页面 {pageKey}"；跨页面工具名重复复用 `INVALID_TOOL` 拒绝注册。
+- 页面智能路由单测：C# `PageRouterTests`（9 项）、Python `test_page_router`（12 项）、
+  TypeScript `page_router.test.ts`（9 项）、Java `PageRouterTest`（10 项），覆盖单飞
+  并发、GC/注销重建、激活超时、无工厂报错、激活钩子只执行一次；Bridge 侧新增
+  pageKey 注册/跨页重名拒绝/描述前缀端到端测试。
+
+### Changed
+
+- 全项目版本号升至 **0.2.0**；四平台 Bridge 二进制（darwin-amd64 / darwin-arm64 /
+  linux-amd64 / windows-amd64）全部以当前源码重建并同步到各 SDK 的 `bridge_bin/`。
+
 ## [0.1.1] - 2026-08-21
 
 ### Fixed

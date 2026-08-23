@@ -1,6 +1,6 @@
 {
   "name": "@agentquay/sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "AgentQuay TypeScript SDK — 让 AI Agent 通过标准 MCP 协议发现并调用你的桌面应用方法",
   "license": "Apache-2.0",
   "keywords": ["mcp", "agent", "desktop", "ai", "tool", "agentquay"],
@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "tsx --test tests/decorator.test.ts tests/schema.test.ts",
+    "test": "tsx --test tests/decorator.test.ts tests/schema.test.ts tests/page_router.test.ts",
     "test:e2e": "tsx --test tests/e2e.test.ts",
     "smoke": "npm run build && npm run smoke:legacy && npm run smoke:dist",
     "smoke:legacy": "tsc tests/legacy_smoke.ts --outDir dist-test --module commonjs --target ES2022 --experimentalDecorators --esModuleInterop --moduleResolution node --skipLibCheck --strict --types node && node dist-test/legacy_smoke.js",
