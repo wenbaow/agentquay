@@ -40,7 +40,7 @@ import (
 
 // 版本信息。
 const (
-	Version         = "0.3.3"
+	Version         = "0.3.4"
 	ProtocolVersion = "1.0"
 )
 

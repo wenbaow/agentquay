@@ -9,7 +9,7 @@
 <dependency>
     <groupId>io.github.wenbaow</groupId>
     <artifactId>agentquay-sdk</artifactId>
-    <version>0.3.3</version>
+    <version>0.3.4</version>
 </dependency>
 ```
 

@@ -2,6 +2,21 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [0.3.4] - 2026-09-24
+
+### Fixed
+
+- **GitHub Release 的校验和步骤**：`sha256sum *` 在 `release-assets/` 含子目录
+  （`bridge-binaries/`）时报 `Is a directory` 而失败，导致 Release 创建与
+  crates.io 发布被连带跳过。改为 `find` 递归收集文件生成校验和，并设为
+  `continue-on-error`——校验和失败不再阻断 Release 与 crates.io。
+
+### Changed
+
+- 全项目版本号升至 **0.3.4**（0.3.3 已完成 PyPI / npm / NuGet / Maven Central
+  四平台发布，本版补齐 GitHub Release 与 crates.io 首发）；四平台 Bridge 二进制
+  以当前源码重建并同步。
+
 ## [0.3.3] - 2026-09-24
 
 ### Fixed

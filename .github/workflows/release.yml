@@ -269,7 +269,11 @@ jobs:
           merge-multiple: true
       - name: 生成校验和
         working-directory: release-assets
-        run: sha256sum * > SHA256SUMS
+        continue-on-error: true # 校验和失败不应阻断 Release 创建与 crates.io 发布
+        run: |
+          # 注意：不能用 `sha256sum *`——目录（bridge-binaries/）会报 "Is a directory"
+          find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
       - name: 生成 Release 说明（取自 CHANGELOG）
         run: python scripts/release-notes.py "${{ github.ref_name }}" > /tmp/release-notes.md
       - uses: softprops/action-gh-release@v2

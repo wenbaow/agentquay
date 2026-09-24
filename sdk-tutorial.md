@@ -83,12 +83,12 @@
 
 | 语言 | 包名 | 版本 | 环境要求 | 实现位置 |
 |------|------|------|----------|----------|
-| Python | `agentquay-sdk`（PyPI） | 0.3.3 | Python ≥ 3.10 | `sdk/python` |
-| TypeScript | `@agentquay/sdk`（npm） | 0.3.3 | Node ≥ 18 | `sdk/typescript` |
-| Java | `io.github.wenbaow:agentquay-sdk`（Maven） | 0.3.3 | Java 11+，编译器需 `-parameters` | `sdk/java` |
-| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.3.3 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
-| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.3.3 | Qt 6.5+，C++17 | `sdk/cpp` |
-| Rust | `agentquay`（crates.io；Bridge 二进制构建期按版本下载） | 0.3.3 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
+| Python | `agentquay-sdk`（PyPI） | 0.3.4 | Python ≥ 3.10 | `sdk/python` |
+| TypeScript | `@agentquay/sdk`（npm） | 0.3.4 | Node ≥ 18 | `sdk/typescript` |
+| Java | `io.github.wenbaow:agentquay-sdk`（Maven） | 0.3.4 | Java 11+，编译器需 `-parameters` | `sdk/java` |
+| C# / .NET | `AgentQuay.Sdk`（NuGet） | 0.3.4 | .NET 8+，零第三方依赖 | `sdk/dotnet` |
+| C++ / Qt | `agentquay`（源码/CMake，v1 未进包管理器） | 0.3.4 | Qt 6.5+，C++17 | `sdk/cpp` |
+| Rust | `agentquay`（crates.io；Bridge 二进制构建期按版本下载） | 0.3.4 | 需自带 `tokio`/`serde`/`schemars` | `sdk/rust` |
 | Swift | 设计稿 §4.5（Swift Macro） | — | 尚未实现 | — |
 
 > 各 SDK 一致性：`name` 缺省回退到方法名；`description` 缺省回退到
@@ -290,7 +290,7 @@ await client.close();
 <dependency>
   <groupId>io.github.wenbaow</groupId>
   <artifactId>agentquay-sdk</artifactId>
-  <version>0.3.3</version>
+  <version>0.3.4</version>
 </dependency>
 ```
 
