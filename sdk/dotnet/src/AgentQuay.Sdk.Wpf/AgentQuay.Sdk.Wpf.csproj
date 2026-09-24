@@ -13,7 +13,7 @@
 
     <!-- NuGet 包元数据 -->
     <PackageId>AgentQuay.Sdk.Wpf</PackageId>
-    <Version>0.3.2</Version>
+    <Version>0.3.3</Version>
     <Authors>AgentQuay</Authors>
     <Description>AgentQuay.Sdk 的 WPF 扩展：页面智能路由的 UI 线程调度器与页面就绪等待（页面智能路由 §5.3）。</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

@@ -229,7 +229,15 @@ jobs:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: mvn -B deploy
+        run: |
+          set -o pipefail
+          mvn -B deploy 2>&1 | tee "$RUNNER_TEMP/mvn-deploy.log"
+      - name: 失败诊断（错误行输出为注解，注解无需认证即可读取）
+        if: failure()
+        run: |
+          grep -E "^\[ERROR\]" "$RUNNER_TEMP/mvn-deploy.log" 2>/dev/null | tail -8 | while IFS= read -r line; do
+            echo "::error::${line//%/%%}"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: maven-package

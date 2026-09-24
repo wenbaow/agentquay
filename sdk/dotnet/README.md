@@ -6,7 +6,7 @@
 ## 依赖
 
 ```xml
-<PackageReference Include="AgentQuay.Sdk" Version="0.3.2" />
+<PackageReference Include="AgentQuay.Sdk" Version="0.3.3" />
 ```
 
 - 需要 **.NET 8+**（`ClientWebSocket` 与 `System.Text.Json` 均为 BCL 内置，零第三方运行时依赖）

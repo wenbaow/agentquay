@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentquay-sdk"
-version = "0.3.2"
+version = "0.3.3"
 description = "AgentQuay Python SDK — 让 AI Agent 通过 MCP 发现并调用你的桌面应用方法"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -2,6 +2,22 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [0.3.3] - 2026-09-24
+
+### Fixed
+
+- **Maven Central 发布（最后一个平台）**：`central-publishing-maven-plugin:0.5.0`
+  在 Portal API 响应新增 `warnings` 字段后反序列化失败
+  （`UnrecognizedPropertyException: Unrecognized field "warnings"`），导致
+  `mvn deploy` 在产物已上传、签名已完成之后仍报错。升级插件到 **0.11.0**。
+  （此前的失败点依次为：GPG 批处理口令、Java e2e 平台匹配，均已在本轮修复。）
+
+### Changed
+
+- 全项目版本号升至 **0.3.3**；四平台 Bridge 二进制以当前源码重建并同步。
+- 发布工作流：Maven 步骤增加失败诊断，把 `[ERROR]` 行输出为 GitHub 注解
+  （注解可无认证读取，便于排障）。
+
 ## [0.3.2] - 2026-09-24
 
 ### Fixed
