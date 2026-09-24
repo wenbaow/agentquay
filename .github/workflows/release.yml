@@ -173,12 +173,17 @@ jobs:
         with:
           user: wenbaow # nuget.org 账号名（即 trusted publishing 策略的 Package Owner）
       - name: 推送 nuget.org
-        shell: pwsh
+        shell: bash # PowerShell 不对原生命令展开通配符，用 bash 循环逐个推送
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
-          dotnet nuget push artifacts/*.nupkg `
-            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" `
-            --source https://api.nuget.org/v3/index.json `
-            --skip-duplicate
+          for pkg in artifacts/*.nupkg; do
+            echo "==> pushing $pkg"
+            dotnet nuget push "$pkg" \
+              --api-key "$NUGET_API_KEY" \
+              --source https://api.nuget.org/v3/index.json \
+              --skip-duplicate
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: nuget-package
@@ -205,18 +210,17 @@ jobs:
           cache: maven
           # setup-java 生成 settings.xml：server-id 对应 pom 的 publishingServerId，
           # server-username/password 填环境变量名（运行时取 secret 注入）；
-          # gpg-private-key 导入签名密钥，gpg-passphrase 填环境变量名供插件读取。
+          # gpg-private-key 导入签名密钥（口令由 deploy 步骤的 MAVEN_GPG_PASSPHRASE 提供）。
           server-id: central
           server-username: OSSRH_USERNAME
           server-password: OSSRH_PASSWORD
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg-passphrase: GPG_PASSPHRASE
       - name: deploy（测试 + sources/javadoc + GPG 签名 + Portal 直发）
         working-directory: sdk/java
         env:
           OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
           OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: mvn -B deploy
       - uses: actions/upload-artifact@v4
         with:

@@ -6,7 +6,7 @@
 
     <groupId>io.github.wenbaow</groupId>
     <artifactId>agentquay-sdk</artifactId>
-    <version>0.3.0</version>
+    <version>0.3.1</version>
     <packaging>jar</packaging>
 
     <name>AgentQuay Java SDK</name>
@@ -147,6 +147,11 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-gpg-plugin</artifactId>
                 <version>3.2.2</version>
+                <configuration>
+                    <!-- CI 无 gpg-agent 可交互：禁用 agent，改由 MAVEN_GPG_PASSPHRASE
+                         环境变量在批处理模式下提供口令（官方推荐的无人值守配置） -->
+                    <useAgent>false</useAgent>
+                </configuration>
                 <executions>
                     <execution>
                         <id>sign-artifacts</id>

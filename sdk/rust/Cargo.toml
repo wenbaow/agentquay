@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/wenbaow/agentquay"
@@ -16,4 +16,4 @@ keywords = ["mcp", "agent", "desktop", "ai", "tool"]
 # 本 workspace 内跨 crate 依赖（发布时 cargo 按 version 解析到 crates.io 同名包，
 # 故此处版本必须与 workspace.package.version 同步 —— check-version.py 会校验）
 [workspace.dependencies]
-agentquay-macros = { path = "crates/agentquay-macros", version = "0.3.0" }
+agentquay-macros = { path = "crates/agentquay-macros", version = "0.3.1" }

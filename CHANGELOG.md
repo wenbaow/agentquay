@@ -2,6 +2,26 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [0.3.1] - 2026-09-24
+
+### Fixed
+
+- **首次多平台发布的三个 CI 问题**（v0.3.0 的工作流在 npm / NuGet / Maven 三平台失败，
+  本版修复；0.3.0 仅 PyPI 发布成功，其余平台由 0.3.1 承接）：
+  - **Maven Central**：`maven-gpg-plugin` 默认 `useAgent=true`，依赖 gpg-agent 交互式
+    输入口令，CI 无人值守环境签名失败（`gpg: signing failed: Bad passphrase`）。
+    改为官方推荐的无人值守配置：`useAgent=false` + `MAVEN_GPG_PASSPHRASE` 环境变量
+    批处理模式（本地已实测签名成功）。
+  - **NuGet**：PowerShell 不对原生命令展开通配符，`dotnet nuget push artifacts/*.nupkg`
+    报 `error: File does not exist (artifacts/*.nupkg)`；改为 bash 循环逐个推送。
+  - **npm**：granular access token 需启用 Bypass 2FA，并同时授予包与组织（agentquay）
+    写权限（凭据侧修正，工作流无需改动）。
+
+### Changed
+
+- 全项目版本号升至 **0.3.1**；四平台 Bridge 二进制（darwin-amd64 / darwin-arm64 /
+  linux-amd64 / windows-amd64）全部以当前源码重建并同步到各 SDK 的 `bridge_bin/`。
+
 ## [0.3.0] - 2026-09-24
 
 ### Added

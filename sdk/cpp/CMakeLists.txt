@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(agentquay-cpp VERSION 0.3.0 LANGUAGES CXX)
+project(agentquay-cpp VERSION 0.3.1 LANGUAGES CXX)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
