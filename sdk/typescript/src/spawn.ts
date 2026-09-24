@@ -79,6 +79,15 @@ export function findBridgeBinary(): string | null {
     for (const dir of BRIDGE_BIN_DIRS) {
       const p = path.join(dir, name);
       if (fs.existsSync(p)) {
+        // 打包链路（npm pack / 手工打包）可能丢失 Unix 权限位，这里兜底补齐；
+        // 只读安装目录下 chmod 失败则忽略，交给 spawn 报错。
+        if (process.platform !== "win32") {
+          try {
+            fs.chmodSync(p, 0o755);
+          } catch {
+            // 忽略：无权限修改
+          }
+        }
         return p;
       }
     }

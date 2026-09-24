@@ -10,7 +10,7 @@
 
     <!-- NuGet 包元数据（设计文档 §4.2：NuGet 包分发 AgentQuay.Sdk） -->
     <PackageId>AgentQuay.Sdk</PackageId>
-    <Version>0.3.1</Version>
+    <Version>0.3.2</Version>
     <Authors>AgentQuay</Authors>
     <Description>让 AI Agent 通过标准 MCP 协议发现并调用你的桌面应用方法（设计文档 §4.2）。加个 [AgentTool] 注解，其余全部由框架处理。</Description>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>

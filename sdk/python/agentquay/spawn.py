@@ -71,8 +71,23 @@ def _bundled_binary() -> Path | None:
             continue
         candidate = Path(__file__).resolve().parent / "bridge_bin" / name
         if candidate.exists():
+            _ensure_executable(candidate)
             return candidate
     return None
+
+
+def _ensure_executable(path: Path) -> None:
+    """确保内嵌二进制可执行：wheel/npm 等打包链路可能丢失 Unix 权限位。
+
+    只读安装（系统级 site-packages）下 chmod 会失败，忽略即可——此时交给
+    spawn 报错并提示 AGENTQUAY_BRIDGE_BIN 兜底。
+    """
+    if os.name == "nt":
+        return
+    try:
+        path.chmod(path.stat().st_mode | 0o111)
+    except OSError:
+        pass
 
 
 def find_bridge_binary() -> Path | None:

@@ -272,13 +272,20 @@ class AgentQuayE2ETest {
         Path dist = Paths.get(System.getProperty("user.dir"))
                 .getParent().getParent().resolve("bridge").resolve("dist");
         if (Files.isDirectory(dist)) {
+            // 必须按当前平台精确匹配：dist 目录含四平台产物，只按 "agentquay-" 前缀
+            // 会在非 Windows 上选中 macOS 二进制（Permission denied / 无法执行）
             String os = System.getProperty("os.name", "").toLowerCase();
-            String prefix = os.contains("win") ? "agentquay-windows-" : "agentquay-";
+            String osName = os.contains("win") ? "windows"
+                    : os.contains("mac") ? "darwin" : "linux";
+            String arch = System.getProperty("os.arch", "").toLowerCase();
+            String archName = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : "amd64";
+            String prefix = "agentquay-" + osName + "-" + archName;
             try (var stream = Files.list(dist)) {
                 for (java.util.Iterator<Path> it = stream.iterator(); it.hasNext(); ) {
                     Path p = it.next();
                     String name = p.getFileName().toString();
                     if (name.startsWith(prefix)) {
+                        p.toFile().setExecutable(true); // CI 产物可能未带权限位
                         return p;
                     }
                 }

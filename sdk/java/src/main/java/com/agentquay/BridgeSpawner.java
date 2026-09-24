@@ -234,6 +234,8 @@ public final class BridgeSpawner {
                             "agentquay", "bridge_bin", name);
                     Files.createDirectories(target.getParent());
                     Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+                    // jar 资源不携带 Unix 权限位：解压后显式置可执行（Windows 上无害）
+                    target.toFile().setExecutable(true);
                     return target;
                 }
             } catch (IOException e) {

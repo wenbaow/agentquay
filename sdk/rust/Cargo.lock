@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentquay"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agentquay-macros",
  "dirs",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "agentquay-macros"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "music_app"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "agentquay",
  "env_logger",

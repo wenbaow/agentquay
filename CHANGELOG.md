@@ -2,6 +2,28 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [0.3.2] - 2026-09-24
+
+### Fixed
+
+- **跨平台可执行位**（CI 在 Linux 上运行 Java e2e 时暴露）：内嵌 Bridge 二进制在
+  打包/解压链路上可能丢失 Unix 可执行位，导致 Linux/macOS 上 auto-spawn 报
+  `Permission denied`。修复分三层：
+  - 仓库内 18 个 unix 二进制以 `100755` 权限位记录（git），发布工作流在拷贝 CI
+    产物后显式 `chmod +x`，保证 wheel / npm tarball / nupkg / jar 携带可执行位；
+  - **Java SDK**：从 jar 解压内嵌二进制后显式 `setExecutable(true)`（jar 资源
+    不携带 Unix 权限位）；
+  - **Python / TypeScript SDK**：运行内嵌二进制前兜底 `chmod`（只读安装目录下
+    忽略失败，交由 spawn 报错提示 `AGENTQUAY_BRIDGE_BIN`）。
+- **Java e2e 测试的平台匹配**：在 `bridge/dist` 查找二进制时仅用 `agentquay-`
+  前缀，非 Windows 平台会选中 macOS 产物（CI 上导致 Maven 发布在测试阶段失败）；
+  改为按当前 OS + 架构精确匹配。
+
+### Changed
+
+- 全项目版本号升至 **0.3.2**；四平台 Bridge 二进制（darwin-amd64 / darwin-arm64 /
+  linux-amd64 / windows-amd64）以当前源码重建并同步到各 SDK 的 `bridge_bin/`。
+
 ## [0.3.1] - 2026-09-24
 
 ### Fixed
