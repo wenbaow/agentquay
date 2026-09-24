@@ -5,12 +5,13 @@
 #   - 各平台包名/命名空间已注册（PyPI 项目、npm 组织、crates.io、nuget.org、
 #     Maven Central Portal 需验证 io.github.wenbaow 命名空间（GitHub 验证）；
 #   - GitHub Environments 与对应 secrets：
-#       npm           NPM_TOKEN
 #       crates-io     CARGO_REGISTRY_TOKEN
 #       maven-central OSSRH_USERNAME / OSSRH_PASSWORD / GPG_PRIVATE_KEY / GPG_PASSPHRASE
-#     （PyPI 与 NuGet 走 OIDC，不需要 secret）
+#     （PyPI / npm / NuGet 走 OIDC，不需要 secret；npm 环境仅保留为发布审批门）
 #   - PyPI 项目 agentquay-sdk 配置 Trusted Publishing（OIDC 绑定本仓库 release.yml）
-#   - nuget.org 配置 Trusted Publishing（OIDC 绑定本仓库 release.yml + 环境 nuget）。
+#   - nuget.org 配置 Trusted Publishing（OIDC 绑定本仓库 release.yml + 环境 nuget）
+#   - npm 包 @agentquay/sdk 配置 Trusted Publisher（OIDC 绑定本仓库 release.yml +
+#     环境 npm，并勾选允许直接 npm publish）。
 #
 # 依赖顺序（关键）：crates.io 发布必须等 GitHub Release 创建完成——crates.io 包
 # 不内嵌 Bridge 二进制（超出 10MiB 上限），Rust 的 build.rs 要从 Release 附件按
@@ -116,8 +117,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: bridge-build
     environment: npm
-    env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing（OIDC）：无需 NPM_TOKEN
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -131,9 +133,10 @@ jobs:
           chmod +x sdk/typescript/bridge_bin/agentquay-* # 保证 npm tarball 内保留可执行位
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # trusted publishing 需 Node ≥ 22.14 / npm CLI ≥ 11.5.1（Node 20 自带 npm 10 不支持）
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      - name: 构建并发布
+      - name: 构建并发布（OIDC 自动鉴权 + 自动 provenance）
         working-directory: sdk/typescript
         run: |
           npm ci

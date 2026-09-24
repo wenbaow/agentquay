@@ -2,6 +2,19 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
+## [Unreleased]
+
+### Changed
+
+- **npm 发布迁移到 Trusted Publishing（OIDC）**：`publish-npm` 不再使用 `NPM_TOKEN`
+  （可在下次发布成功后从仓库删除该 secret），改由 GitHub Actions OIDC 自动鉴权并
+  自动生成 provenance 证明；Node 版本 20 → 24（trusted publishing 要求 Node ≥ 22.14 /
+  npm CLI ≥ 11.5.1）。npm 侧需先在 `@agentquay/sdk` 的 Settings → Trusted Publisher
+  绑定仓库与工作流（见 CONTRIBUTING.md「发布流程」）。
+- 首次发布中 0.3.0–0.3.3 为各平台覆盖不全的中间版本，已按平台清理：PyPI yank
+  0.3.0–0.3.3、npm unpublish 0.3.2/0.3.3、NuGet unlist 0.3.1–0.3.3；Maven Central
+  产物不可删除（0.3.3 保留）。**0.3.4 是首个五平台齐全的版本。**
+
 ## [0.3.4] - 2026-09-24
 
 ### Fixed

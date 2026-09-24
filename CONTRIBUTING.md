@@ -71,7 +71,7 @@ CI（如首次发版）时，请先按本流程把基础设施跑通。**
 | 平台 | 账号/命名空间 | GitHub 仓库配置 |
 |------|--------------|----------------|
 | PyPI | 注册并创建项目 `agentquay-sdk`，配置 **Trusted Publishing**（OIDC 绑定本仓库、workflow 名 `release.yml`，无需 token） | 无 |
-| npm | 注册并创建组织 `agentquay`（包名 `@agentquay/sdk`） | environment `npm` 的 secret `NPM_TOKEN`（granular token，仅授权该包 publish） |
+| npm | 注册并创建组织 `agentquay`（包名 `@agentquay/sdk`）；在**包的 Settings → Trusted Publisher** 绑定：Organization `wenbaow`、Repository `agentquay`、Workflow `release.yml`、Environment `npm`，并勾选允许直接 `npm publish`（**OIDC，无需 NPM_TOKEN**；首次发布前包不存在、无法配置，故首个版本曾用 granular token） | environment `npm` 无需 secret（OIDC），仅作发布审批门 |
 | crates.io | 注册，包名 `agentquay` / `agentquay-macros` | environment `crates-io` 的 secret `CARGO_REGISTRY_TOKEN`（scope 限定两包） |
 | NuGet | 注册，包名 `AgentQuay.Sdk` / `AgentQuay.Sdk.Wpf`；在 nuget.org → Account → Trusted Publishing 创建策略绑定本仓库 `release.yml` workflow + `nuget` 环境（**OIDC，无需 API key**） | environment `nuget` 无需 secret（OIDC），如需审批门可勾 Required reviewers |
 | Maven Central | central.sonatype.com 注册，**连接 GitHub 账号完成 `io.github.wenbaow` 命名空间验证**（agentquay.com 域名已被注册，故不用 `com.agentquay`；GitHub 验证免费即时）；生成 GPG 签名密钥对并上传公钥 | environment `maven-central` 的 secrets：`OSSRH_USERNAME` / `OSSRH_PASSWORD`（Portal token）、`GPG_PRIVATE_KEY`（ASCII-armored 私钥）、`GPG_PASSPHRASE` |
