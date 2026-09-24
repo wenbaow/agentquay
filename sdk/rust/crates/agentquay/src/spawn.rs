@@ -1,8 +1,8 @@
 //! auto-spawn：检测本地 Bridge，未运行时自动拉起内嵌二进制（设计文档 §4.1）。
 //!
 //! 流程：读 `~/.agentquay/port` → TCP 探测 → 未运行且 `auto_spawn_bridge=true` →
-//! 查找内嵌二进制（crate 资源，按 target 条件 `include_bytes!`）或 PATH 中的
-//! `agentquay` → 以 `serve --embedded` 拉起 → 等待端口就绪。
+//! 查找内嵌二进制（由 build.rs 按 target 条件准备，路径经编译期常量注入）或 PATH
+//! 中的 `agentquay` → 以 `serve --embedded` 拉起 → 等待端口就绪。
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -262,7 +262,8 @@ pub fn kill_child(mut child: Child) {
 }
 
 // ---------------------------------------------------------------------------
-// 内嵌二进制（按 target 条件 include_bytes!，避免全平台打包膨胀）
+// 内嵌二进制（构建期由 build.rs 准备：仓库内 bridge_bin/ 或 GitHub Releases
+// 按版本下载；路径经 AGENTQUAY_EMBEDDED_BRIDGE 编译期常量注入）
 // ---------------------------------------------------------------------------
 
 fn cache_dir() -> PathBuf {
@@ -271,59 +272,21 @@ fn cache_dir() -> PathBuf {
         .unwrap_or_else(|| home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".agentquay").join("cache"))
 }
 
-#[cfg(all(feature = "embedded-bridge", target_os = "windows", target_arch = "x86_64"))]
-fn embedded_bytes() -> &'static [u8] {
-    include_bytes!("../bridge_bin/agentquay-windows-amd64.exe")
-}
-
-#[cfg(all(feature = "embedded-bridge", target_os = "linux", target_arch = "x86_64"))]
-fn embedded_bytes() -> &'static [u8] {
-    include_bytes!("../bridge_bin/agentquay-linux-amd64")
-}
-
-#[cfg(all(feature = "embedded-bridge", target_os = "macos", target_arch = "aarch64"))]
-fn embedded_bytes() -> &'static [u8] {
-    include_bytes!("../bridge_bin/agentquay-darwin-arm64")
-}
-
-#[cfg(all(feature = "embedded-bridge", target_os = "macos", target_arch = "x86_64"))]
-fn embedded_bytes() -> &'static [u8] {
-    include_bytes!("../bridge_bin/agentquay-darwin-amd64")
-}
-
-#[cfg(not(any(
-    all(feature = "embedded-bridge", target_os = "windows", target_arch = "x86_64"),
-    all(feature = "embedded-bridge", target_os = "linux", target_arch = "x86_64"),
-    all(feature = "embedded-bridge", target_os = "macos", target_arch = "aarch64"),
-    all(feature = "embedded-bridge", target_os = "macos", target_arch = "x86_64"),
-)))]
-fn embedded_bytes() -> &'static [u8] {
-    // 当前平台没有内嵌二进制：回退 PATH 查找
-    &[]
-}
-
 fn embedded_binary() -> Option<PathBuf> {
-    let bytes = embedded_bytes();
-    if bytes.is_empty() {
+    let source = PathBuf::from(option_env!("AGENTQUAY_EMBEDDED_BRIDGE")?);
+    if !source.is_file() {
         return None;
     }
-    let name = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        "agentquay-windows-amd64.exe"
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "agentquay-darwin-amd64"
-    } else if cfg!(target_os = "linux") {
-        "agentquay-linux-amd64"
-    } else {
-        "agentquay-darwin-arm64"
-    };
+    let bytes_len = std::fs::metadata(&source).ok()?.len();
+    let name = source.file_name()?.to_str()?;
     let dir = cache_dir().join("bridge_bin");
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(name);
-    // 内容不一致时重新解压（版本升级覆盖旧文件）
-    let need_write = !path.is_file()
-        || std::fs::metadata(&path).map(|m| m.len() != bytes.len() as u64).unwrap_or(true);
-    if need_write {
-        if std::fs::write(&path, bytes).is_err() {
+    // 内容不一致时重新拷贝（版本升级覆盖旧文件，并避开只读源码树）
+    let need_copy = !path.is_file()
+        || std::fs::metadata(&path).map(|m| m.len() != bytes_len).unwrap_or(true);
+    if need_copy {
+        if std::fs::copy(&source, &path).is_err() {
             return None;
         }
     }

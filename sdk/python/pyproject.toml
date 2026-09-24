@@ -1,20 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentquay-sdk"
-version = "0.2.0"
+version = "0.3.0"
 description = "AgentQuay Python SDK — 让 AI Agent 通过 MCP 发现并调用你的桌面应用方法"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [{ name = "AgentQuay" }]
 keywords = ["mcp", "agent", "desktop", "ai", "tool"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
     "Topic :: Software Development :: Libraries",
@@ -28,6 +28,7 @@ dev = ["pytest>=8"]
 
 [project.urls]
 Homepage = "https://github.com/wenbaow/agentquay"
+Repository = "https://github.com/wenbaow/agentquay"
 
 [tool.setuptools]
 packages = ["agentquay"]

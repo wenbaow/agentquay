@@ -2,7 +2,33 @@
 
 本项目采用语义化版本（SemVer）。各 SDK 与 Bridge 的包版本以对应清单文件为准。
 
-## [Unreleased]
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- **发布自动化**：新增 `.github/workflows/release.yml`——打 `vX.Y.Z` tag 触发，
+  交叉编译四平台 Bridge 二进制、组装并推送 PyPI（Trusted Publishing）/ npm /
+  crates.io / NuGet / Maven Central（Central Portal + GPG 签名）五个平台，并创建
+  GitHub Release（附二进制与各包产物 + SHA256 校验和）。新增
+  `scripts/check-version.py`（版本一致性校验，发布前哨兵）与
+  `scripts/release-notes.py`（Release 说明取自 CHANGELOG）。
+- 各 SDK 补齐包管理器发布元数据：Python（PEP 639 SPDX license + license-files）、
+  npm（author/repository/publishConfig）、.NET（RepositoryUrl）、Java
+  （developers/scm/sources/javadoc/GPG 签名/Central Portal 插件、可复现构建
+  outputTimestamp）。
+
+### Changed
+
+- **Rust SDK 内嵌 Bridge 二进制机制**：crates.io 单包上限 10MiB，无法携带
+  四平台二进制（共 ~37MB）。`bridge_bin/` 从发布的 crate 中排除，改为构建期由
+  `build.rs` 准备：本地开发用仓库内提交的二进制（离线可用），从 crates.io 安装时
+  按 `CARGO_PKG_VERSION` 从 GitHub Releases 下载对应平台二进制并缓存（首次构建需
+  联网，下载失败报错并提示关闭 `embedded-bridge` 特性）。`agentquay-macros`
+  依赖版本改为继承 workspace，发布顺序 macros → 主 crate。
+- 全项目版本号升至 **0.3.0**；四平台 Bridge 二进制（darwin-amd64 / darwin-arm64 /
+  linux-amd64 / windows-amd64）全部以当前源码重建并同步到各 SDK 的 `bridge_bin/`。
+- **Java SDK 发布坐标**：Maven Central groupId 采用 `io.github.wenbaow`（GitHub
+  账号命名空间验证），即 `io.github.wenbaow:agentquay-sdk`。
 
 ## [0.2.0] - 2026-08-23
 

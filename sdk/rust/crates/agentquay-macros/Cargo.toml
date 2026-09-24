@@ -4,6 +4,8 @@ description = "AgentQuay 的 #[agent_tool] 过程宏（设计文档 §4.8）"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
 
 [lib]
 proc-macro = true

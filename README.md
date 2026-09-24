@@ -9,6 +9,11 @@
 ![Top language](https://img.shields.io/github/languages/top/wenbaow/agentquay)
 ![SDKs](https://img.shields.io/badge/SDK-Python%20%7C%20TypeScript%20%7C%20Java%20%7C%20.NET%20%7C%20C%2B%2B%20%7C%20Rust-brightgreen.svg)
 ![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)
+![PyPI](https://img.shields.io/pypi/v/agentquay-sdk)
+![npm](https://img.shields.io/npm/v/@agentquay/sdk)
+![crates.io](https://img.shields.io/crates/v/agentquay)
+![NuGet](https://img.shields.io/nuget/v/AgentQuay.Sdk)
+![Maven Central](https://img.shields.io/maven-central/v/io.github.wenbaow/agentquay-sdk)
 
 **让 AI Agent 通过标准 MCP 协议发现并调用桌面应用方法的跨平台框架。**
 
@@ -272,7 +277,10 @@ Agent → Bridge: tools/call { name: "music-app_delete", ... }（带 progressTok
 
 为什么可行：Bridge 用 Go 编译成单个静态二进制（~10MB，压缩 ~4MB），每个语言包
 都能低成本携带（wheel `package_data` / npm `bridge_bin` / NuGet `contentFiles` /
-Rust `include_bytes!` / C++ 资源），一套三平台产物。
+Java classpath 资源 / Rust 构建期准备 / C++ 资源），一套三平台产物。Rust 因
+crates.io 单包 10MiB 上限不内嵌二进制：本地开发用仓库内 `bridge_bin/`，从
+crates.io 安装时由 `build.rs` 按版本从 GitHub Releases 下载对应平台二进制（首次
+构建需联网）。
 
 内嵌模式与系统服务**是同一份代码、同一套协议**，只是启动参数不同
 （`serve --embedded` vs `serve`）：SDK 探测到系统服务在跑就直接复用，不会重复拉起。
@@ -480,6 +488,17 @@ agentquay help                    # 帮助
 
 ## 7. 快速开始
 
+各语言 SDK 已发布到官方包管理器，安装方式：
+
+| 语言 | 命令 |
+|------|------|
+| Python | `pip install agentquay-sdk` |
+| TypeScript | `npm install @agentquay/sdk` |
+| Rust | `cargo add agentquay`（首次构建自动从 GitHub Releases 下载内嵌 Bridge 二进制） |
+| C# / .NET | `dotnet add package AgentQuay.Sdk`（WPF 扩展另加 `AgentQuay.Sdk.Wpf`） |
+| Java | Maven / Gradle 引入 `io.github.wenbaow:agentquay-sdk` |
+| C++ | 源码分发：CMake 引入 `sdk/cpp`（Qt 6.5+） |
+
 完整的分语言指南见 **[`sdk-tutorial.md`](sdk-tutorial.md)**。最短路径（Python 示例）：
 
 ```python
@@ -557,10 +576,10 @@ TypeScript `registerTools(cls, { pageKey })` / `registerToolsFactory`、Java
 └── sdk/
     ├── python/              # Python SDK（agentquay-sdk，PyPI）
     ├── typescript/          # TypeScript SDK（@agentquay/sdk，npm）
-    ├── java/                # Java SDK（com.agentquay:agentquay-sdk，Maven）
-    ├── dotnet/              # C# SDK（AgentQuay.Sdk，NuGet，.NET 8+）
+    ├── java/                # Java SDK（io.github.wenbaow:agentquay-sdk，Maven Central）
+    ├── dotnet/              # C# SDK（AgentQuay.Sdk / AgentQuay.Sdk.Wpf，NuGet，.NET 8+）
     ├── cpp/                 # C++ SDK（Qt 6.5+，CMake 源码分发）
-    └── rust/                # Rust SDK（crates.io 待发布）
+    └── rust/                # Rust SDK（agentquay / agentquay-macros，crates.io）
 ```
 
 ## 10. 验证

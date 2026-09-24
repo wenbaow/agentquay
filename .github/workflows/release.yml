@@ -1,0 +1,275 @@
+# 发布工作流：打 vX.Y.Z tag 触发，构建 Bridge 二进制 → 组装各 SDK 包 →
+# 推送 PyPI / npm / crates.io / NuGet / Maven Central → 创建 GitHub Release。
+#
+# 前置条件（一次性，见 CONTRIBUTING.md「发布流程」）：
+#   - 各平台包名/命名空间已注册（PyPI 项目、npm 组织、crates.io、nuget.org、
+#     Maven Central Portal 需验证 io.github.wenbaow 命名空间（GitHub 验证）；
+#   - GitHub Environments 与对应 secrets：
+#       npm           NPM_TOKEN
+#       crates-io     CARGO_REGISTRY_TOKEN
+#       maven-central OSSRH_USERNAME / OSSRH_PASSWORD / GPG_PRIVATE_KEY / GPG_PASSPHRASE
+#     （PyPI 与 NuGet 走 OIDC，不需要 secret）
+#   - PyPI 项目 agentquay-sdk 配置 Trusted Publishing（OIDC 绑定本仓库 release.yml）
+#   - nuget.org 配置 Trusted Publishing（OIDC 绑定本仓库 release.yml + 环境 nuget）。
+#
+# 依赖顺序（关键）：crates.io 发布必须等 GitHub Release 创建完成——crates.io 包
+# 不内嵌 Bridge 二进制（超出 10MiB 上限），Rust 的 build.rs 要从 Release 附件按
+# 版本下载；其余平台互不依赖。
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 版本与分支校验
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 版本一致性（tag == 各清单文件）
+        run: python scripts/check-version.py "${GITHUB_REF_NAME#v}"
+      - name: 校验 tag 指向 main
+        run: |
+          git fetch --depth=1 origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main \
+            || { echo "::error::该 tag 不在 main 上，拒绝发布"; exit 1; }
+
+  bridge-build:
+    name: 交叉编译 Bridge 二进制（4 平台）
+    runs-on: ubuntu-latest
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: bridge/go.mod
+      - name: 编译四平台二进制
+        shell: bash
+        run: |
+          cd bridge
+          mkdir -p dist
+          for spec in "linux amd64" "darwin amd64" "darwin arm64"; do
+            set -- $spec
+            echo "==> GOOS=$1 GOARCH=$2"
+            CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -trimpath -ldflags "-s -w" \
+              -o "dist/agentquay-$1-$2" ./cmd/agentquay
+          done
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
+            -o "dist/agentquay-windows-amd64.exe" ./cmd/agentquay
+          ls -la dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bridge-binaries
+          path: bridge/dist/
+          retention-days: 1
+
+  publish-pypi:
+    name: 发布 PyPI（agentquay-sdk）
+    runs-on: ubuntu-latest
+    needs: bridge-build
+    permissions:
+      contents: read # job 级 permissions 会重置其余作用域，checkout 需要它
+      id-token: write # Trusted Publishing（OIDC），无需 API token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-binaries
+          path: bridge/dist
+      - name: 覆盖内嵌二进制为本次 tag 构建产物
+        run: cp -f bridge/dist/* sdk/python/agentquay/bridge_bin/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 构建 sdist + wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build sdk/python
+          twine check sdk/python/dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/python/dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-package
+          path: sdk/python/dist/
+          retention-days: 1
+
+  publish-npm:
+    name: 发布 npm（@agentquay/sdk）
+    runs-on: ubuntu-latest
+    needs: bridge-build
+    environment: npm
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-binaries
+          path: bridge/dist
+      - name: 覆盖内嵌二进制为本次 tag 构建产物
+        shell: bash
+        run: cp -f bridge/dist/* sdk/typescript/bridge_bin/
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: 构建并发布
+        working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm run build
+          npm publish --access public
+          npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: sdk/typescript/*.tgz
+          retention-days: 1
+
+  publish-nuget:
+    name: 发布 NuGet（AgentQuay.Sdk / AgentQuay.Sdk.Wpf）
+    runs-on: windows-latest
+    needs: bridge-build
+    environment: nuget
+    permissions:
+      contents: read # job 级 permissions 会重置其余作用域，checkout 需要它
+      id-token: write # NuGet Trusted Publishing（OIDC），无需 API key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-binaries
+          path: bridge/dist
+      - name: 覆盖内嵌二进制为本次 tag 构建产物
+        shell: bash
+        run: cp -f bridge/dist/* sdk/dotnet/src/AgentQuay.Sdk/bridge_bin/
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: 打包两个 NuGet 包
+        shell: pwsh
+        run: |
+          dotnet pack sdk/dotnet/src/AgentQuay.Sdk/AgentQuay.Sdk.csproj -c Release -o artifacts
+          dotnet pack sdk/dotnet/src/AgentQuay.Sdk.Wpf/AgentQuay.Sdk.Wpf.csproj -c Release -o artifacts
+      - name: NuGet Trusted Publishing 登录（OIDC）
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: wenbaow # nuget.org 账号名（即 trusted publishing 策略的 Package Owner）
+      - name: 推送 nuget.org
+        shell: pwsh
+        run: |
+          dotnet nuget push artifacts/*.nupkg `
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" `
+            --source https://api.nuget.org/v3/index.json `
+            --skip-duplicate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: artifacts/
+          retention-days: 1
+
+  publish-maven:
+    name: 发布 Maven Central（io.github.wenbaow:agentquay-sdk）
+    runs-on: ubuntu-latest
+    needs: bridge-build
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-binaries
+          path: bridge/dist
+      - name: 覆盖内嵌二进制为本次 tag 构建产物
+        run: cp -f bridge/dist/* sdk/java/src/main/resources/bridge_bin/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: maven
+          # setup-java 生成 settings.xml：server-id 对应 pom 的 publishingServerId，
+          # server-username/password 填环境变量名（运行时取 secret 注入）；
+          # gpg-private-key 导入签名密钥，gpg-passphrase 填环境变量名供插件读取。
+          server-id: central
+          server-username: OSSRH_USERNAME
+          server-password: OSSRH_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: deploy（测试 + sources/javadoc + GPG 签名 + Portal 直发）
+        working-directory: sdk/java
+        env:
+          OSSRH_USERNAME: ${{ secrets.OSSRH_USERNAME }}
+          OSSRH_PASSWORD: ${{ secrets.OSSRH_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: mvn -B deploy
+      - uses: actions/upload-artifact@v4
+        with:
+          name: maven-package
+          path: |
+            sdk/java/target/agentquay-sdk-*.jar
+            sdk/java/target/agentquay-sdk-*-sources.jar
+            sdk/java/target/agentquay-sdk-*-javadoc.jar
+          retention-days: 1
+
+  github-release:
+    name: 创建 GitHub Release（附二进制与各包产物）
+    runs-on: ubuntu-latest
+    needs: [bridge-build, publish-pypi, publish-npm, publish-nuget, publish-maven]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v4
+        with:
+          name: bridge-binaries
+          path: release-assets/bridge-binaries
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*-package"
+          merge-multiple: true
+      - name: 生成校验和
+        working-directory: release-assets
+        run: sha256sum * > SHA256SUMS
+      - name: 生成 Release 说明（取自 CHANGELOG）
+        run: python scripts/release-notes.py "${{ github.ref_name }}" > /tmp/release-notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: /tmp/release-notes.md
+          files: |
+            release-assets/bridge-binaries/*
+            release-assets/*
+
+  publish-crates:
+    name: 发布 crates.io（agentquay-macros → agentquay）
+    runs-on: ubuntu-latest
+    needs: github-release # 必须先有 Release 附件（build.rs 按版本下载内嵌二进制）
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 发布宏 crate（依赖方需先就位）
+        working-directory: sdk/rust
+        run: cargo publish -p agentquay-macros --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"
+      - name: 发布主 crate
+        working-directory: sdk/rust
+        run: cargo publish -p agentquay --token "${{ secrets.CARGO_REGISTRY_TOKEN }}"

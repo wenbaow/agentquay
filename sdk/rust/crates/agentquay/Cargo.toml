@@ -4,9 +4,14 @@ description = "AgentQuay Rust SDK — 让 AI Agent 通过 MCP 发现并调用桌
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+# 内嵌 Bridge 二进制不入 crates.io 包（4 × ~10MB 超出每包 10MiB 上限）；
+# 由 build.rs 按目标平台从 GitHub Releases 按版本下载（详见 build.rs）。
+exclude = ["bridge_bin/**"]
 
 [dependencies]
-agentquay-macros = { path = "../agentquay-macros", version = "0.2.0" }
+agentquay-macros = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 futures-util = { version = "0.3", features = ["sink"] }
@@ -25,10 +30,15 @@ default = ["embedded-bridge"]
 # 不可用时回退 ~/.agentquay/tokens.json。
 # 注意：keyring 的加密依赖在部分工具链（如 MinGW 无 dlltool）下无法编译，故默认关闭。
 keyring = ["dep:keyring"]
-# 按目标平台内嵌 Bridge 二进制（include_bytes!），auto-spawn 时免安装
+# 按目标平台内嵌 Bridge 二进制（构建期由 build.rs 准备：仓库内 bridge_bin/ 或
+# 从 GitHub Releases 按版本下载），auto-spawn 时免安装
 embedded-bridge = []
 # 确认弹窗使用 OS 原生对话框（rfd）；默认回退控制台输入
 native-confirm = ["dep:rfd"]
+
+[build-dependencies]
+# 从 GitHub Releases 下载内嵌 Bridge 二进制（构建期使用，不进入运行时依赖）
+ureq = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

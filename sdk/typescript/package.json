@@ -1,12 +1,23 @@
 {
   "name": "@agentquay/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AgentQuay TypeScript SDK — 让 AI Agent 通过标准 MCP 协议发现并调用你的桌面应用方法",
   "license": "Apache-2.0",
+  "author": {
+    "name": "AgentQuay",
+    "url": "https://github.com/wenbaow/agentquay"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wenbaow/agentquay.git"
+  },
   "keywords": ["mcp", "agent", "desktop", "ai", "tool", "agentquay"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist", "bridge_bin", "README.md"],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },

@@ -4,9 +4,9 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.agentquay</groupId>
+    <groupId>io.github.wenbaow</groupId>
     <artifactId>agentquay-sdk</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <packaging>jar</packaging>
 
     <name>AgentQuay Java SDK</name>
@@ -17,11 +17,29 @@
         <license>
             <name>Apache License, Version 2.0</name>
             <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+            <distribution>repo</distribution>
         </license>
     </licenses>
 
+    <developers>
+        <developer>
+            <id>wenbaow</id>
+            <name>Wang Wenbao</name>
+            <url>https://github.com/wenbaow</url>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/wenbaow/agentquay.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/wenbaow/agentquay.git</developerConnection>
+        <url>https://github.com/wenbaow/agentquay</url>
+        <tag>HEAD</tag>
+    </scm>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- 固定时间戳：保证 jar/sources/javadoc 可复现构建（发布时由 CI 覆盖为当前时间） -->
+        <project.build.outputTimestamp>2026-08-23T00:00:00Z</project.build.outputTimestamp>
         <maven.compiler.release>11</maven.compiler.release>
         <jackson.version>2.17.2</jackson.version>
         <junit.version>5.10.2</junit.version>
@@ -87,6 +105,67 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
+            </plugin>
+            <!-- Maven Central 发布：sources/javadoc 附件 + GPG 签名 + Central Portal 直发。
+                 GPG 私钥/口令与 Portal token 由 CI 注入（settings.xml），本地 mvn package 不受影响。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.3.1</version>
+                <configuration>
+                    <!-- 二进制资源不随 sources jar 分发（内嵌 Bridge 仅在主 jar 中） -->
+                    <excludes>
+                        <exclude>**/bridge_bin/**</exclude>
+                    </excludes>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.8.0</version>
+                <configuration>
+                    <doclint>none</doclint>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-gpg-plugin</artifactId>
+                <version>3.2.2</version>
+                <executions>
+                    <execution>
+                        <id>sign-artifacts</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>sign</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <version>0.5.0</version>
+                <extensions>true</extensions>
+                <configuration>
+                    <publishingServerId>central</publishingServerId>
+                    <tokenAuth>true</tokenAuth>
+                </configuration>
             </plugin>
         </plugins>
     </build>
